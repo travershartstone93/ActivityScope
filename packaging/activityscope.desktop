@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=ActivityScope
+GenericName=Task Manager
+Comment=See what is using your computer, and what caused the last slowdown
+Exec=activityscope
+Icon=activityscope
+Terminal=false
+Categories=System;Monitor;
+Keywords=task;process;cpu;memory;monitor;history;

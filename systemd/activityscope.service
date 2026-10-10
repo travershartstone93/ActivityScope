@@ -1,0 +1,17 @@
+# Starts ActivityScope hidden in the tray when the desktop session starts.
+# The app writes its own copy (with the right path) from Settings > Start
+# recording when I log in; this file is for packagers and manual installs.
+[Unit]
+Description=ActivityScope: records what caused CPU, memory, disk, GPU and heat spikes
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/activityscope --hidden
+Restart=on-failure
+RestartSec=5
+Nice=10
+MemoryMax=300M
+
+[Install]
+WantedBy=graphical-session.target
