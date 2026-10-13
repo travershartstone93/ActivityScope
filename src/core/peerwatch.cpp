@@ -6,6 +6,10 @@ std::vector<PeerAlert> PeerWatch::feed(const std::vector<ConnectionRecord>& seen
     std::map<std::string, const ConnectionRecord*> latest;
     for (const auto& c : seen) {
         if (c.program == "another account" || c.program == "unknown program") continue;
+        // Peer-to-peer traffic goes to high ports. Ordinary use of the web
+        // (443, 80, mail, DNS) must never count, or every browser would be
+        // accused within its first ten minutes.
+        if (c.port < 1024) continue;
         peers_[c.program][c.remote] = now;
         latest[c.program] = &c;
     }

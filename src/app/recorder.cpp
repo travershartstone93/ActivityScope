@@ -22,6 +22,7 @@ void Recorder::start() {
     sampler_ = std::make_unique<as::Sampler>();
     store_ = std::make_unique<as::Store>(as::default_db_path());
     if (!store_->ok()) emit storeError(QString::fromStdString(store_->error()));
+    last_db_sample_ = store_->last_sample_time();
     feed_dir_ = as::runtime_dir();
     checkPastBoots();
     logwatch_ = std::make_unique<as::LogWatch>(store_.get());
@@ -52,6 +53,12 @@ void Recorder::tick() {
         auto changes = startup_->poll(s->wall);
         entries.insert(entries.end(), changes.begin(), changes.end());
         auto started = proclog_.feed(*s);
+        if (!reconciled_) {
+            // First pass of this run: anything the database still thinks is
+            // running, but is not alive now, ended while nothing recorded.
+            reconciled_ = true;
+            store_->close_stale_procs(started, last_db_sample_);
+        }
         pendingProcs_.insert(pendingProcs_.end(), started.begin(), started.end());
         auto conns = netlog_.feed(*s);
         if (!conns.empty()) {
@@ -60,14 +67,28 @@ void Recorder::tick() {
                 if (n.kind != "Loopback" && n.kind != "Virtual") up += n.tx_bps;
             peers_.allowed = [this](const std::string& p) { return allowedSharers_.count(p) > 0; };
             for (const auto& a : peers_.feed(conns, up, s->wall)) {
+                // The record's PID was captured when the pair was first seen
+                // and may be stale or recycled; only offer Quit on a live
+                // process that really is this program.
+                int pid = 0;
                 uint64_t ticks = 0;
                 for (const auto& p : s->procs)
-                    if (p.key.pid == a.pid) ticks = p.key.start_ticks;
+                    if (p.key.pid == a.pid && p.name == a.program) {
+                        pid = p.key.pid;
+                        ticks = p.key.start_ticks;
+                    }
+                if (!pid)
+                    for (const auto& p : s->procs)
+                        if (p.name == a.program) {
+                            pid = p.key.pid;
+                            ticks = p.key.start_ticks;
+                            break;
+                        }
                 entries.push_back({s->wall, "network",
                                    a.program + " is sharing with " + std::to_string(a.peers) + " different computers in the background",
-                                   "Program: " + a.exe + "\nPID: " + std::to_string(a.pid) + "\nThe machine was uploading about " +
+                                   "Program: " + a.exe + "\nPID: " + std::to_string(pid) + "\nThe machine was uploading about " +
                                        as::human_bytes(a.upload_bps) + "/s at the time."});
-                emit sharing(QString::fromStdString(a.program), a.pid, ticks, a.peers, a.upload_bps);
+                emit sharing(QString::fromStdString(a.program), pid, ticks, a.peers, a.upload_bps);
             }
         }
         for (const auto& c : store_->add_connections(conns)) {

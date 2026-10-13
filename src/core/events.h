@@ -68,7 +68,13 @@ struct Event {
     std::vector<Culprit> culprits;
     std::string summary;
     bool open = true;
+    // false: the machine doing what you asked of a program you launched.
+    // true: worth attention on its own (shutdown danger, swap trouble, or a
+    // background program as the main cause).
+    bool notable = true;
 };
+
+bool event_notable(const Event& e);
 
 struct MinuteTop {
     int64_t minute = 0;  // seconds since 1970, start of the minute

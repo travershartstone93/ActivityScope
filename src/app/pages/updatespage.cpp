@@ -104,6 +104,7 @@ void UpdatesPage::setHeld(const std::string& name, bool hold) {
     if (!hold) l.removeAll(n);
     st.setValue("held_packages", l);
     fill();
+    analyse();  // the held set changed, so the rehearsal's verdict has too
 }
 
 double UpdatesPage::lastFullUpgrade() const {
@@ -187,6 +188,7 @@ QString UpdatesPage::checkDb() const {
 }
 
 void UpdatesPage::analyse() {
+    if (analysing_) return;
     if (std::none_of(updates_.begin(), updates_.end(), [](const auto& u) { return !u.aur; })) return;
     // A rehearsal of Update all on a scratch copy of the package database:
     // nothing on the system changes, and no administrator rights are needed.
@@ -300,7 +302,6 @@ void UpdatesPage::showAlerts() {
                     b->setToolTip("Keep it at its current version; Update all will skip it.");
                     connect(b, &QPushButton::clicked, this, [this, fx] {
                         for (const auto& t : fx.targets) setHeld(t, true);
-                        analyse();
                     });
                 } else {
                     connect(b, &QPushButton::clicked, this, [this, fx] {
@@ -323,7 +324,8 @@ void UpdatesPage::showAlerts() {
 
 void UpdatesPage::fill() {
     const auto system = heldBySystem();
-    const auto all = held();
+    std::set<std::string> all = system;
+    for (const auto& n : QSettings().value("held_packages").toStringList()) all.insert(n.toStdString());
     QStringList heldNames;
     for (const auto& h : all) heldNames << QString::fromStdString(h) + (system.count(h) ? " (pacman.conf)" : " (ActivityScope)");
     holds_->setText(heldNames.isEmpty() ? QString("No packages are being kept at their current version.")
@@ -379,6 +381,9 @@ void UpdatesPage::fill() {
     }
     updatable_ = updatable;
     allBtn_->setEnabled(updatable > 0 && !analysing_ && pending_ == 0);
+    const bool allGood = checked_ && checkErrors_.isEmpty() && updates_.empty();
+    status_->setStyleSheet(allGood ? QString("color:%1; font-size:18px; font-weight:600;").arg(pal().good.name())
+                                   : QString("color:%1; font-size:13px;").arg(pal().dim.name()));
     if (checked_ && !checkErrors_.isEmpty()) {
         status_->setText("The update check did not finish: " + checkErrors_.join("; ") + ". What is shown may be incomplete.");
     } else if (checked_) {
@@ -414,7 +419,10 @@ void UpdatesPage::setBusy(bool busy, const QString& what, int percent) {
 
 void UpdatesPage::runInTerminal(const QString& what, const QString& command) {
     // A visible terminal: you see every step and type your own password.
-    const QString script = QString("echo 'ActivityScope: %1'; echo '$ %2'; echo; %2; echo; read -rp 'Finished. Press Enter to close this window.'")
+    // A hindsight snapshot first, when the tool is installed: if the update
+    // changes behaviour, the question "what changed?" has a before picture.
+    const QString script = QString("command -v hindsight >/dev/null && hindsight snap --reason 'before %1'; "
+                                   "echo 'ActivityScope: %1'; echo '$ %2'; echo; %2; echo; read -rp 'Finished. Press Enter to close this window.'")
                                .arg(what, command);
     QString term = QStandardPaths::findExecutable("gnome-terminal");
     QStringList args = {"--wait", "--title", "ActivityScope update", "--", "bash", "-c", script};

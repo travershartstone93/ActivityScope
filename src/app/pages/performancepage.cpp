@@ -179,7 +179,7 @@ void PerformancePage::updateList() {
         } else if (it.id.startsWith("gpu:")) {
             for (const auto& g : s->gpus)
                 if ("gpu:" + qs(g.pci) == it.id) {
-                    text = qs(g.name) + "\n" + (g.asleep ? QString("Asleep") : g.util.ok() ? pct(g.util.get()) : QString("Load not readable"));
+                    text = qs(g.name) + "\n" + (g.asleep ? QString("Asleep") : g.util.ok() ? pct(g.util.get()) : QString("No load sensor"));
                     auto f = L.gpu.find(g.pci);
                     if (f != L.gpu.end()) series = {{Live::series(f->second), it.color, 1.5}};
                 }

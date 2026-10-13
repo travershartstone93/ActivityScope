@@ -1,6 +1,9 @@
 #include "upgradecheck.h"
 
+#include <poll.h>
+#include <signal.h>
 #include <sys/statvfs.h>
+#include <time.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -19,12 +22,24 @@ namespace as {
 
 namespace fs = std::filesystem;
 
-CmdResult run_command(const std::vector<std::string>& argv) {
+namespace {
+double monotonic_now() {
+    timespec ts{};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return double(ts.tv_sec) + double(ts.tv_nsec) / 1e9;
+}
+}  // namespace
+
+CmdResult run_command(const std::vector<std::string>& argv, int timeout_s) {
     CmdResult r;
     int pipefd[2];
     if (argv.empty() || pipe(pipefd) != 0) return r;
     pid_t pid = fork();
-    if (pid < 0) return r;
+    if (pid < 0) {
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return r;
+    }
     if (pid == 0) {
         dup2(pipefd[1], 1);
         dup2(pipefd[1], 2);
@@ -38,12 +53,29 @@ CmdResult run_command(const std::vector<std::string>& argv) {
         _exit(127);
     }
     close(pipefd[1]);
+    // A wedged child must not hang the page's analysis thread forever.
     char buf[65536];
-    ssize_t n;
-    while ((n = read(pipefd[0], buf, sizeof buf)) > 0) r.out.append(buf, std::size_t(n));
+    double deadline = monotonic_now() + timeout_s;
+    bool killed = false;
+    for (;;) {
+        pollfd pf{pipefd[0], POLLIN, 0};
+        int pr = poll(&pf, 1, 1000);
+        if (pr > 0) {
+            ssize_t n = read(pipefd[0], buf, sizeof buf);
+            if (n <= 0) break;
+            r.out.append(buf, std::size_t(n));
+        }
+        if (monotonic_now() > deadline) {
+            kill(pid, SIGKILL);
+            killed = true;
+            r.out += "\n(ActivityScope: the command did not finish in time and was stopped)";
+            break;
+        }
+    }
     close(pipefd[0]);
     int status = 0;
     waitpid(pid, &status, 0);
+    if (killed) return r;
     r.code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
     return r;
 }
@@ -203,36 +235,45 @@ std::vector<std::string> elf_needed(const std::string& path) {
     if (!f) return out;
     unsigned char ident[16];
     if (!f.read(reinterpret_cast<char*>(ident), 16) || std::memcmp(ident, "\x7f" "ELF", 4) != 0) return out;
-    if (ident[4] != 2 || ident[5] != 1) return out;  // 64-bit little-endian only
+    // Both ELF classes: 32-bit matters here, because the lib32 family is
+    // exactly where upgrades strand programs.
+    const bool is64 = ident[4] == 2;
+    if ((ident[4] != 1 && ident[4] != 2) || ident[5] != 1) return out;  // little-endian only
     auto rd = [&](uint64_t off, void* p, std::size_t n) {
         f.clear();
         f.seekg(std::streamoff(off));
         return bool(f.read(static_cast<char*>(p), std::streamsize(n)));
     };
-    uint64_t shoff = 0;
+    auto rdv = [&](uint64_t off) -> uint64_t {  // one pointer-sized field
+        uint64_t v64 = 0;
+        uint32_t v32 = 0;
+        if (is64) return rd(off, &v64, 8) ? v64 : 0;
+        return rd(off, &v32, 4) ? v32 : 0;
+    };
+    uint64_t shoff = rdv(is64 ? 0x28 : 0x20);
     uint16_t shentsize = 0, shnum = 0;
-    if (!rd(0x28, &shoff, 8) || !rd(0x3A, &shentsize, 2) || !rd(0x3C, &shnum, 2) || shentsize < 64 || shnum == 0 || shnum > 4096) return out;
-    struct Sec { uint32_t type, link; uint64_t offset, size, entsize; };
+    rd(is64 ? 0x3A : 0x2E, &shentsize, 2);
+    rd(is64 ? 0x3C : 0x30, &shnum, 2);
+    if (shoff == 0 || shentsize < (is64 ? 64 : 40) || shnum == 0 || shnum > 4096) return out;
+    struct Sec { uint32_t type, link; uint64_t offset, size; };
     std::vector<Sec> secs(shnum);
     for (uint16_t i = 0; i < shnum; ++i) {
         uint64_t base = shoff + uint64_t(i) * shentsize;
         rd(base + 4, &secs[i].type, 4);
-        rd(base + 0x18, &secs[i].offset, 8);
-        rd(base + 0x20, &secs[i].size, 8);
-        rd(base + 0x28, &secs[i].link, 4);
-        rd(base + 0x38, &secs[i].entsize, 8);
+        secs[i].offset = rdv(base + (is64 ? 0x18 : 16));
+        secs[i].size = rdv(base + (is64 ? 0x20 : 20));
+        rd(base + (is64 ? 0x28 : 24), &secs[i].link, 4);
     }
+    const uint64_t stride = is64 ? 16 : 8;
     for (const auto& s : secs) {
         if (s.type != 6 /* SHT_DYNAMIC */ || s.link >= secs.size() || s.size > (1 << 20)) continue;
         const Sec& str = secs[s.link];
         if (str.size > (16 << 20)) continue;
         std::string strtab(std::size_t(str.size), '\0');
         if (!rd(str.offset, strtab.data(), strtab.size())) continue;
-        for (uint64_t off = 0; off + 16 <= s.size; off += 16) {
-            int64_t tag = 0;
-            uint64_t val = 0;
-            rd(s.offset + off, &tag, 8);
-            rd(s.offset + off + 8, &val, 8);
+        for (uint64_t off = 0; off + stride <= s.size; off += stride) {
+            uint64_t tag = rdv(s.offset + off);
+            uint64_t val = rdv(s.offset + off + stride / 2);
             if (tag == 0) break;
             if (tag == 1 /* DT_NEEDED */ && val < strtab.size()) out.emplace_back(strtab.c_str() + val);
         }

@@ -270,7 +270,7 @@ QVariant ProcessModel::data(const QModelIndex& i, int role) const {
         case Status: {
             switch (p->state.empty() ? ' ' : p->state[0]) {
             case 'R': return "running";
-            case 'S': return "sleeping";
+            case 'S': return "idle";
             case 'D': return "waiting on disk";
             case 'Z': return "zombie";
             case 'T': return "stopped";

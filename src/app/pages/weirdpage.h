@@ -26,6 +26,7 @@ private:
     void fill(const QJsonDocument& doc);
     void showDetail(QTreeWidgetItem* item);
     QString weirdPath() const;
+    bool usingBundled() const;
 
     QLabel *status_, *headline_, *detail_, *coverage_;
     QPushButton *scanBtn_, *trustBtn_, *jumpBtn_;

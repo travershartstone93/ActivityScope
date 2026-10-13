@@ -200,17 +200,16 @@ SettingsPage::SettingsPage(Recorder* r, QWidget* parent) : QWidget(parent), reco
     left->addWidget(heat);
 
     auto* share = new Card("globe", "Hidden activity");
-    QStringList allowed = st.value("allowed_sharers").toStringList();
-    auto* allowedLbl = note(allowed.isEmpty() ? "No programs are allowed to share in the background yet."
-                                              : "Allowed to share in the background: " + allowed.join(", ") + ".");
-    auto* resetAllowed = new QPushButton("Stop allowing them");
-    resetAllowed->setEnabled(!allowed.isEmpty());
-    connect(resetAllowed, &QPushButton::clicked, this, [this, allowedLbl, resetAllowed] {
+    allowedLbl_ = note("");
+    resetAllowed_ = new QPushButton("Stop allowing them");
+    connect(resetAllowed_, &QPushButton::clicked, this, [this] {
         QSettings().remove("allowed_sharers");
         applySaved(recorder_);
-        allowedLbl->setText("No programs are allowed to share in the background.");
-        resetAllowed->setEnabled(false);
+        refreshAllowed();
     });
+    refreshAllowed();
+    auto* allowedLbl = allowedLbl_;
+    auto* resetAllowed = resetAllowed_;
     share->body()->addWidget(note("You are warned when a program talks to 8 or more different computers within 10 minutes, the "
                                   "way torrent clients do. Allowing a program from the warning silences it."));
     share->body()->addWidget(allowedLbl);
@@ -243,8 +242,10 @@ SettingsPage::SettingsPage(Recorder* r, QWidget* parent) : QWidget(parent), reco
     auto* tf = new QFormLayout;
     tf->setVerticalSpacing(8);
     as::Triggers t = savedTriggers();
+    std::vector<QDoubleSpinBox*> boxes;
     for (const auto& k : kKnobs) {
         auto* box = new QDoubleSpinBox;
+        boxes.push_back(box);
         box->setRange(k.lo, k.hi);
         box->setSingleStep(k.step);
         box->setDecimals(k.step < 1 ? 1 : 0);
@@ -261,15 +262,38 @@ SettingsPage::SettingsPage(Recorder* r, QWidget* parent) : QWidget(parent), reco
         });
         tf->addRow(k.label, box);
     }
-    auto* reset = new QPushButton("Restore defaults");
-    connect(reset, &QPushButton::clicked, this, [this] {
-        QSettings s;
-        s.remove("triggers");
-        applySaved(recorder_);
-        QMetaObject::invokeMethod(&Theme::get(), [] { Theme::get().set(Theme::get().p().name); }, Qt::QueuedConnection);
-    });
+    // Three starting points; every number stays editable below.
+    const std::map<QString, double> normal = {{"cpu_total", 70}, {"core", 98}, {"proc_cpu", 40}, {"pressure", 5},
+                                              {"swapin_kbps", 4096}, {"avail_drop_mb", 1000}, {"proc_growth_mb", 600},
+                                              {"disk_busy", 80}, {"disk_mbps", 100}, {"gpu", 70}, {"vram_jump_mb", 1000},
+                                              {"temp", 88}, {"temp_rise", 30}, {"fan", 90}, {"fan_step", 30}};
+    const std::map<QString, double> quiet = {{"cpu_total", 85}, {"core", 100}, {"proc_cpu", 60}, {"pressure", 10},
+                                             {"swapin_kbps", 8192}, {"avail_drop_mb", 2000}, {"proc_growth_mb", 1000},
+                                             {"disk_busy", 90}, {"disk_mbps", 200}, {"gpu", 85}, {"vram_jump_mb", 2000},
+                                             {"temp", 92}, {"temp_rise", 35}, {"fan", 95}, {"fan_step", 40}};
+    auto applyPreset = [boxes](const std::map<QString, double>* preset) {
+        as::Triggers defaults;
+        for (std::size_t i = 0; i < std::size(kKnobs); ++i) {
+            double v = defaults.*(kKnobs[i].field);
+            if (preset) {
+                auto it = preset->find(kKnobs[i].key);
+                if (it != preset->end()) v = it->second;
+            }
+            boxes[i]->setValue(v);  // saving and applying happen through the box
+        }
+    };
+    auto* presets = new QHBoxLayout;
+    presets->setSpacing(8);
+    for (auto [label, preset] : std::initializer_list<std::pair<const char*, const std::map<QString, double>*>>{
+             {"Sensitive (default)", nullptr}, {"Normal", &normal}, {"Quiet", &quiet}}) {
+        auto* b = new QPushButton(label);
+        b->setToolTip(preset ? "Raise the thresholds so only bigger things count as events." : "The defaults: catch as much as possible.");
+        connect(b, &QPushButton::clicked, this, [applyPreset, preset] { applyPreset(preset); });
+        presets->addWidget(b);
+    }
+    presets->addStretch(1);
+    trig->body()->addLayout(presets);
     trig->body()->addLayout(tf);
-    trig->body()->addWidget(reset, 0, Qt::AlignLeft);
     grid->addWidget(trig, 0, 1, Qt::AlignTop);
     grid->setColumnStretch(0, 1);
     grid->setColumnStretch(1, 1);
@@ -304,4 +328,17 @@ void SettingsPage::setLoginStart(bool on) {
         int rc = QProcess::execute("systemctl", {"--user", "disable", "activityscope.service"});
         loginMsg_->setText(rc == 0 ? "ActivityScope will no longer start at login." : "Could not disable the login service.");
     }
+}
+
+void SettingsPage::refreshAllowed() {
+    // Allow is granted from the notification, so the card re-reads it on show.
+    QStringList allowed = QSettings().value("allowed_sharers").toStringList();
+    allowedLbl_->setText(allowed.isEmpty() ? "No programs are allowed to share in the background yet."
+                                           : "Allowed to share in the background: " + allowed.join(", ") + ".");
+    resetAllowed_->setEnabled(!allowed.isEmpty());
+}
+
+void SettingsPage::showEvent(QShowEvent* e) {
+    QWidget::showEvent(e);
+    refreshAllowed();
 }

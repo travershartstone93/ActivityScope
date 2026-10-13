@@ -1,5 +1,7 @@
 #include "events.h"
 
+#include "fs.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -366,6 +368,21 @@ std::optional<MinuteTop> EventEngine::take_minute() {
     return out;
 }
 
+bool event_notable(const Event& e) {
+    if (e.kinds & KindShutdown) return true;
+    if (!e.dead_fans.empty()) return true;
+    if (e.min_margin >= 0 && e.min_margin <= 6) return true;  // nearly shut down
+    for (const auto& t : e.triggers)  // the machine itself struggling
+        if (starts_with(t, "Swapping back in") || starts_with(t, "Programs waited on memory")) return true;
+    // A program you launched yourself (an app scope) working hard is routine;
+    // a background service or an unplaceable program as the main cause is not.
+    if (e.culprits.empty()) return true;
+    // app-*.scope and vte-spawn-*.scope are things you launched yourself
+    // (apps, and commands typed into a terminal).
+    const std::string& u = e.culprits.front().unit;
+    return !(starts_with(u, "app-") || starts_with(u, "vte-spawn-"));
+}
+
 Event EventEngine::finish(bool final_close) {
     Event e = *ev_;
     e.open = !final_close;
@@ -548,6 +565,7 @@ Event EventEngine::finish(bool final_close) {
     if (e.kinds & KindDisk) add_top([](const Culprit& c) { return c.io_bytes; });
     if (e.kinds & KindGpu) add_top([](const Culprit& c) { return c.gpu_mem; });
     e.culprits = std::move(kept);
+    e.notable = event_notable(e);
     e.summary = describe(e);
     return e;
 }
@@ -624,7 +642,8 @@ std::string describe(const Event& e) {
     if (e.min_margin >= 0 && e.min_margin <= 15 && e.guard_limit > 0) {
         s += fmt(" It came within %.0f °C of the %.0f °C point where the system shuts itself down", e.min_margin, e.guard_limit);
         if (e.min_seconds >= 0 && e.min_seconds < 120)
-            s += fmt("; at its fastest climb that was about %.0f seconds away", e.min_seconds);
+            s += e.min_seconds < 1.5 ? std::string("; at its fastest climb that was about 1 second away")
+                                     : fmt("; at its fastest climb that was about %.0f seconds away", e.min_seconds);
         s += ".";
         any = true;
     }

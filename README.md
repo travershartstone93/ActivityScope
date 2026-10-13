@@ -74,8 +74,36 @@ Written in C++20 with Qt 6. It never asks for root.
   button that pins a program's fingerprint so later scans stay quiet until
   the file changes. If weird is not installed the page says how to get it.
 - **Popout.** A small always-on-top readout of CPU, memory, GPU, heat and fan.
+- **Routine or notable.** Every event is judged when it closes: work you
+  started yourself (an app, or a command typed into a terminal) is routine
+  and drawn quietly; red is kept for events that deserve attention on their
+  own, such as shutdown danger, swap trouble, a dead fan, or a background
+  service as the main cause. Three preset buttons in Settings (Sensitive,
+  Normal, Quiet) set all trigger thresholds at once; every number stays
+  editable. Programs whose end was never seen (a crash or power loss) are
+  closed on the next start with an honest estimated end. Per-program network
+  byte counts would need administrator rights, so they are deliberately
+  absent: the history records who connected where, not how much they sent.
+- **About.** The last sidebar entry explains the whole program from inside
+  it: what it records, the guard, the investigation kit, every page, and the
+  rules it lives by.
 - **Always recording.** The app lives in the system tray. Closing the window
   keeps it recording; quitting from the tray menu stops it.
+
+## Installing
+
+    ./install.sh
+
+No root at any point. The script compiles the program, installs it under
+~/.local, starts the tray recorder now and at every login, makes the
+bundled weird scanner available as the weird command when no system copy
+exists, and adds ~/.local/bin to PATH for bash and fish if it is missing.
+Needs cmake, a C++ compiler, Qt 6, libsystemd, libudev, python3 and rsync.
+
+A copy of the weird scanner (npm package thatsweird, same author) ships in
+vendor/ and installs with the program, so the Weird processes page works
+from a plain checkout. Installing thatsweird from npm gives a
+self-updating copy, which is then preferred automatically.
 
 ## How it catches programs that are already gone
 

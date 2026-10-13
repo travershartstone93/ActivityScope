@@ -27,6 +27,7 @@ struct EventRow {
     std::string triggers, summary;
     double peak_cpu = 0, peak_mem = 0, peak_disk = 0, peak_gpu = -1, peak_temp = -1, peak_fan = -1;
     double min_margin = -1;
+    bool notable = true;
 };
 
 class Store {
@@ -59,6 +60,8 @@ public:
 
     // Every program that ran, and who connected where.
     void add_procs(const std::vector<ProcessRecord>& records);
+    double last_sample_time() const;
+    int close_stale_procs(const std::vector<ProcessRecord>& live, double fallback_end);
     // Returns the records that were never seen before (by program, address, port).
     std::vector<ConnectionRecord> add_connections(const std::vector<ConnectionRecord>& records);
     bool boot_seen(const std::string& id) const;

@@ -85,15 +85,6 @@ Store::Store(std::string path) {
         UNIQUE(program, remote, port, proto)))");
     exec("CREATE INDEX IF NOT EXISTS connections_seen ON connections(first_seen)");
     // Everything in time order, for "what happened at 14:32?" in one query.
-    exec("DROP VIEW IF EXISTS v_timeline");
-    exec(R"(CREATE VIEW v_timeline AS
-        SELECT t, 'log: ' || category AS kind, title, detail FROM log
-        UNION ALL SELECT start, 'resource event', summary, triggers FROM events
-        UNION ALL SELECT started, 'program started', name || ' (PID ' || pid || ', from ' || IFNULL(parent, '?') || ')', cmdline FROM procs
-        UNION ALL SELECT ended, 'program ended', name || ' (PID ' || pid || ')',
-                         printf('ran %.0f s, used %.1f s of CPU, peak memory %.0f MB', ended - started, cpu_seconds, peak_rss / 1e6)
-                  FROM procs WHERE ended IS NOT NULL AND NOT (ended - started < 10 AND cpu_seconds < 0.1)
-        UNION ALL SELECT first_seen, 'first connection', program || ' to ' || remote || ':' || port, proto || ', ' || IFNULL(exe, '') FROM connections)");
     exec(R"(CREATE TABLE IF NOT EXISTS event_samples(
         event_id INTEGER, t REAL, cpu REAL, mem_pct REAL, pressure REAL, disk_bps REAL,
         gpu REAL, temp REAL, fan REAL))");
@@ -103,8 +94,21 @@ Store::Store(std::string path) {
                             "ALTER TABLE samples ADD COLUMN guard_limit REAL", "ALTER TABLE events ADD COLUMN min_margin REAL",
                             "ALTER TABLE events ADD COLUMN min_seconds REAL", "ALTER TABLE events ADD COLUMN guard_limit REAL",
                             "ALTER TABLE events ADD COLUMN guard_zone TEXT", "ALTER TABLE events ADD COLUMN dead_fans TEXT",
-                            "ALTER TABLE event_samples ADD COLUMN guard REAL"})
+                            "ALTER TABLE event_samples ADD COLUMN guard REAL", "ALTER TABLE events ADD COLUMN notable INTEGER",
+                            "ALTER TABLE procs ADD COLUMN end_estimated INTEGER"})
         sqlite3_exec(db_, add, nullptr, nullptr, nullptr);
+    // The view names columns the ALTERs add, so it is built after them.
+    exec("DROP VIEW IF EXISTS v_timeline");
+    exec(R"(CREATE VIEW v_timeline AS
+        SELECT t, 'log: ' || category AS kind, title, detail FROM log
+        UNION ALL SELECT start, 'resource event', summary, triggers FROM events
+        UNION ALL SELECT started, 'program started', name || ' (PID ' || pid || ', from ' || IFNULL(parent, '?') || ')', cmdline
+                  FROM procs WHERE ended IS NULL OR NOT (ended - started < 10 AND cpu_seconds < 0.1)
+        UNION ALL SELECT ended, 'program ended', name || ' (PID ' || pid || ')',
+                         printf('ran %.0f s, used %.1f s of CPU, peak memory %.0f MB', ended - started, cpu_seconds, peak_rss / 1e6)
+                         || CASE WHEN IFNULL(end_estimated, 0) = 1 THEN ' (end estimated: recording stopped)' ELSE '' END
+                  FROM procs WHERE ended IS NOT NULL AND NOT (ended - started < 10 AND cpu_seconds < 0.1)
+        UNION ALL SELECT first_seen, 'first connection', program || ' to ' || remote || ':' || port, proto || ', ' || IFNULL(exe, '') FROM connections)");
 }
 
 Store::~Store() {
@@ -200,9 +204,10 @@ int64_t Store::add_event(const Event& e) {
         std::string fans;
         for (const auto& f : e.dead_fans) fans += (fans.empty() ? "" : "\n") + f;
         Stmt st(db_, "INSERT INTO events(start,end,kinds,primary_kind,triggers,summary,peak_cpu,peak_mem,peak_disk,"
-                     "peak_gpu,peak_temp,peak_fan,total_cpu_seconds,min_margin,min_seconds,guard_limit,guard_zone,dead_fans) "
-                     "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+                     "peak_gpu,peak_temp,peak_fan,total_cpu_seconds,min_margin,min_seconds,guard_limit,guard_zone,dead_fans,notable) "
+                     "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
         st.bind(14, e.min_margin).bind(15, e.min_seconds).bind(16, e.guard_limit).bind(17, e.guard_zone).bind(18, fans);
+        st.bind(19, int64_t(e.notable));
         st.bind(1, e.start).bind(2, e.end).bind(3, int64_t(e.kinds)).bind(4, int64_t(e.primary)).bind(5, triggers)
             .bind(6, e.summary).bind(7, e.peak_cpu).bind(8, e.peak_mem_pct).bind(9, e.peak_disk_bps)
             .bind(10, e.peak_gpu).bind(11, e.peak_temp).bind(12, e.peak_fan).bind(13, e.total_cpu_seconds);
@@ -267,13 +272,14 @@ std::vector<EventRow> Store::events(double from, double to) const {
     std::vector<EventRow> out;
     if (!db_) return out;
     Stmt st(db_, "SELECT id,start,end,kinds,primary_kind,triggers,summary,peak_cpu,peak_mem,peak_disk,peak_gpu,"
-                 "peak_temp,peak_fan,IFNULL(min_margin,-1) FROM events WHERE end >= ? AND start <= ? ORDER BY start DESC");
+                 "peak_temp,peak_fan,IFNULL(min_margin,-1),IFNULL(notable,1) FROM events WHERE end >= ? AND start <= ? ORDER BY start DESC");
     st.bind(1, from).bind(2, to);
     while (st.step()) {
         EventRow r;
         r.id = st.i(0); r.start = st.d(1); r.end = st.d(2); r.kinds = unsigned(st.i(3)); r.primary = unsigned(st.i(4));
         r.triggers = st.t(5); r.summary = st.t(6); r.peak_cpu = st.d(7); r.peak_mem = st.d(8); r.peak_disk = st.d(9);
         r.peak_gpu = st.d(10); r.peak_temp = st.d(11); r.peak_fan = st.d(12); r.min_margin = st.d(13);
+        r.notable = st.i(14) != 0;
         out.push_back(std::move(r));
     }
     return out;
@@ -424,7 +430,8 @@ void Store::add_procs(const std::vector<ProcessRecord>& records) {
     if (!db_ || records.empty()) return;
     exec("BEGIN");
     {
-        Stmt st(db_, "INSERT INTO procs VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(pid, started) DO UPDATE SET "
+        Stmt st(db_, "INSERT INTO procs(pid,started,ended,name,exe,cmdline,user,unit,ppid,parent,cpu_seconds,peak_rss) "
+                     "VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(pid, started) DO UPDATE SET "
                      "ended = COALESCE(excluded.ended, ended), cpu_seconds = excluded.cpu_seconds, "
                      "peak_rss = MAX(peak_rss, excluded.peak_rss)");
         for (const auto& r : records) {
@@ -437,6 +444,40 @@ void Store::add_procs(const std::vector<ProcessRecord>& records) {
         }
     }
     exec("COMMIT");
+}
+
+double Store::last_sample_time() const {
+    if (!db_) return 0;
+    Stmt st(db_, "SELECT IFNULL(max(t), 0) FROM samples");
+    return st.step() ? st.d(0) : 0;
+}
+
+int Store::close_stale_procs(const std::vector<ProcessRecord>& live, double fallback_end) {
+    // Rows left open by a crash, a power loss or an old quit would say
+    // "still running" forever. Anything open that does not match a process
+    // alive right now gets an honest, estimated end.
+    if (!db_ || fallback_end <= 0) return 0;
+    std::vector<std::pair<int64_t, double>> open;
+    {
+        Stmt st(db_, "SELECT pid, started FROM procs WHERE ended IS NULL");
+        while (st.step()) open.emplace_back(st.i(0), st.d(1));
+    }
+    int closed = 0;
+    exec("BEGIN");
+    {
+        Stmt up(db_, "UPDATE procs SET ended = ?, end_estimated = 1 WHERE pid = ? AND started = ? AND ended IS NULL");
+        for (const auto& [pid, started] : open) {
+            bool alive = false;
+            for (const auto& l : live)
+                if (l.pid == pid && std::abs(l.started - started) < 2) alive = true;
+            if (alive) continue;
+            up.bind(1, std::max(fallback_end, started)).bind(2, pid).bind(3, started);
+            up.run();
+            ++closed;
+        }
+    }
+    exec("COMMIT");
+    return closed;
 }
 
 std::vector<ConnectionRecord> Store::add_connections(const std::vector<ConnectionRecord>& records) {

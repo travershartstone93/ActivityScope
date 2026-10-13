@@ -413,7 +413,7 @@ void SummaryPage::refresh() {
     if (g.margin.ok()) {
         // The tile is about how close the machine is to shutting itself down.
         thermal_->setValue(QString::number(g.temp.get(), 'f', 0) + " / " + QString::number(g.limit.get(), 'f', 0) + " °C");
-        QString sub = QString("%1 °C below the shutdown point (%2)").arg(QString::number(std::max(0.0, g.margin.get()), 'f', 0), qs(g.zone));
+        QString sub = QString("%1 °C below the shutdown point").arg(QString::number(std::max(0.0, g.margin.get()), 'f', 0));
         if (g.seconds_left.ok() && g.seconds_left.get() < 120) sub += QString(", about %1 s away at this rate").arg(int(g.seconds_left.get()));
         thermal_->setSubtitle(sub);
         thermal_->setTint(g.margin.get() <= 10 ? P.alert : P.thermal);

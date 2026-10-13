@@ -17,7 +17,7 @@ struct CmdResult {
 };
 using Runner = std::function<CmdResult(const std::vector<std::string>& argv)>;
 // Runs a program with LC_ALL=C (so pacman's messages are in a fixed form).
-CmdResult run_command(const std::vector<std::string>& argv);
+CmdResult run_command(const std::vector<std::string>& argv, int timeout_s = 120);
 
 // "pacman -Qi/-Si" output: one block per package, keyed by Name. When a
 // package is in several repositories, the first (the one pacman uses) wins.
@@ -87,6 +87,7 @@ struct CheckResult {
     double download_bytes = 0, extra_bytes = 0, free_bytes = 0;
 };
 
-CheckResult check_upgrade(const CheckInput& in, const Runner& run = run_command);
+CheckResult check_upgrade(const CheckInput& in,
+                          const Runner& run = [](const std::vector<std::string>& argv) { return run_command(argv); });
 
 }  // namespace as

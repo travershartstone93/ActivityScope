@@ -71,6 +71,8 @@ private:
     as::PeerWatch peers_;
     std::set<std::string> allowedSharers_;
     std::vector<as::ProcessRecord> pendingProcs_;
+    bool reconciled_ = false;
+    double last_db_sample_ = 0;
     double logDays_ = 90;
     as::EventEngine engine_;
     bool watching_ = false;

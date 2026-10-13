@@ -32,12 +32,14 @@ if(AS_BUILD_APP AND EXISTS ${CMAKE_SOURCE_DIR}/src/app/main.cpp)
     assets/icons/panel-left.svg assets/icons/search.svg assets/icons/chevron-right.svg
     assets/icons/chevron-down.svg assets/icons/palette.svg assets/icons/gauge.svg assets/icons/server.svg
     assets/icons/info.svg assets/icons/power.svg assets/icons/users.svg assets/icons/cable.svg
-    assets/icons/package.svg assets/icons/chart-pie.svg assets/icons/cog.svg assets/icons/scroll-text.svg assets/icons/rocket.svg assets/icons/download.svg)
+    assets/icons/package.svg assets/icons/chart-pie.svg assets/icons/cog.svg assets/icons/scroll-text.svg assets/icons/rocket.svg assets/icons/download.svg assets/icons/help-circle.svg)
   target_compile_definitions(activityscope PRIVATE AS_VERSION="${PROJECT_VERSION}")
   target_link_libraries(activityscope PRIVATE ascore Qt6::Widgets Qt6::Svg Qt6::Network Qt6::DBus Qt6::Concurrent)
   install(TARGETS activityscope RUNTIME DESTINATION bin)
   install(FILES packaging/activityscope.desktop DESTINATION share/applications)
   install(FILES assets/activityscope.svg DESTINATION share/icons/hicolor/scalable/apps)
+  install(PROGRAMS vendor/thatsweird/bin/weird DESTINATION share/activityscope/thatsweird/bin)
+  install(FILES vendor/thatsweird/package.json vendor/thatsweird/LICENSE DESTINATION share/activityscope/thatsweird)
 endif()
 
 enable_testing()

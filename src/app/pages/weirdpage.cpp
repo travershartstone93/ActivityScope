@@ -1,5 +1,6 @@
 #include "weirdpage.h"
 
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
 #include <QHBoxLayout>
@@ -148,8 +149,9 @@ WeirdPage::WeirdPage(QWidget* parent) : QWidget(parent) {
     v->addLayout(actions);
 
     v->addWidget(noteLabel("weird judges whether what is running and installed can be trusted, from the distribution's own signed package "
-                           "data. It is a separate command (npm package thatsweird) that ActivityScope runs as you; neither ever gets "
-                           "administrator rights, and nothing is scanned unless you press the button."));
+                           "data. A copy ships with ActivityScope and runs as you; installing the npm package thatsweird gives a "
+                           "self-updating one, which is then preferred. Neither ever gets administrator rights, and nothing is "
+                           "scanned unless you press the button."));
 
     connect(scanBtn_, &QPushButton::clicked, this, &WeirdPage::scan);
     connect(tree_, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem* it, QTreeWidgetItem*) { showDetail(it); });
@@ -170,14 +172,27 @@ WeirdPage::WeirdPage(QWidget* parent) : QWidget(parent) {
 
     if (weirdPath().isEmpty()) {
         scanBtn_->setEnabled(false);
-        status_->setText("The weird command is not installed. Install it with: sudo npm install -g thatsweird");
+        status_->setText("The weird scanner is missing; reinstalling ActivityScope restores the bundled copy.");
+    } else if (usingBundled()) {
+        status_->setText("Nothing has been scanned yet. Press Scan now to run the bundled weird scanner.");
     }
 }
 
 QString WeirdPage::weirdPath() const {
+    // A system installation (which updates itself through npm) wins; the
+    // copy shipped with ActivityScope is the fallback, so nothing else
+    // needs installing.
     QString p = QStandardPaths::findExecutable("weird");
-    if (p.isEmpty() && QFileInfo::exists(QDir::homePath() + "/.local/bin/weird")) p = QDir::homePath() + "/.local/bin/weird";
-    return p;
+    if (!p.isEmpty()) return p;
+    for (const QString& c : {QDir::homePath() + "/.local/bin/weird",
+                             QCoreApplication::applicationDirPath() + "/../share/activityscope/thatsweird/bin/weird",
+                             QCoreApplication::applicationDirPath() + "/../vendor/thatsweird/bin/weird"})
+        if (QFileInfo::exists(c)) return c;
+    return {};
+}
+
+bool WeirdPage::usingBundled() const {
+    return weirdPath().contains("thatsweird");
 }
 
 void WeirdPage::scan() {
@@ -208,7 +223,7 @@ void WeirdPage::scan() {
         scanning_ = false;
         scanBtn_->setEnabled(true);
         progress_->hide();
-        status_->setText("The weird command could not start. Install it with: sudo npm install -g thatsweird");
+        status_->setText("The weird scanner could not start; it needs python3.");
         p->deleteLater();
     });
     // -v so the coverage counts cover everything checked, not just findings.

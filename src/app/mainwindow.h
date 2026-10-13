@@ -16,6 +16,7 @@ class SettingsPage;
 class SystemInfoPage;
 class LogPage;
 class WeirdPage;
+class AboutPage;
 class UpdatesPage;
 class StartupPage;
 class UsersPage;
@@ -67,6 +68,7 @@ private:
     SystemInfoPage* sysinfo_ = nullptr;
     LogPage* log_ = nullptr;
     WeirdPage* weird_ = nullptr;
+    AboutPage* about_ = nullptr;
     UpdatesPage* updates_ = nullptr;
     StartupPage* startup_ = nullptr;
     UsersPage* users_ = nullptr;

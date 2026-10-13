@@ -6,3 +6,8 @@
   `assets/icons/LICENSE`.
 - **Qt 6** is linked dynamically under the LGPL v3.
 - **SQLite** is in the public domain.
+
+## thatsweird (the bundled weird scanner)
+
+MIT License, Copyright (c) 2026 Travers Hartstone. Bundled unmodified in
+vendor/thatsweird/; its license text ships alongside it there.

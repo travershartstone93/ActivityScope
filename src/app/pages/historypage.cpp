@@ -140,9 +140,11 @@ protected:
             QColor c = kindColor(e.primary);
             bool sel = std::abs(e.start - selA_) < 0.5;
             p.setPen(Qt::NoPen);
-            p.setBrush(withAlpha(P.alert, sel ? 90 : 38));
+            // Routine work you started yourself stays quiet; red is kept for
+            // events that deserve attention, so they stand out.
+            p.setBrush(withAlpha(e.notable ? P.alert : P.dim, sel ? 90 : e.notable ? 38 : 16));
             p.drawRect(span);
-            p.setBrush(c);
+            p.setBrush(e.notable ? c : P.faint);
             p.drawRoundedRect(QRectF(span.left(), r.top() - 6, std::max(4.0, span.width()), 5), 2, 2);
         }
         if (selA_ > 0 && selB_ > selA_) {
@@ -411,8 +413,9 @@ void HistoryPage::reloadEvents() {
     QSignalBlocker block(list_);
     list_->clear();
     const Palette& P = pal();
-    auto addItem = [&](const QString& head, const QString& body, unsigned primary, qint64 id) {
-        auto* it = new QListWidgetItem(QIcon(iconPixmap(kindIcon(primary), kindColor(primary), 22)), head + "\n" + body);
+    auto addItem = [&](const QString& head, const QString& body, unsigned primary, qint64 id, bool notable = true) {
+        auto* it = new QListWidgetItem(QIcon(iconPixmap(kindIcon(primary), notable ? kindColor(primary) : pal().faint, 22)), head + "\n" + body);
+        if (!notable) it->setForeground(pal().dim);
         it->setData(Qt::UserRole, id);
         it->setSizeHint(QSize(100, 64));
         list_->addItem(it);
@@ -429,7 +432,7 @@ void HistoryPage::reloadEvents() {
         int cut = first.indexOf(')');
         first = cut > 0 ? first.mid(cut + 2) : first;
         QString head = QString("%1 at %2, for %3").arg(day, clockText(e.start), duration(std::max(1.0, e.end - e.start)));
-        auto* it = addItem(head, QFontMetrics(list_->font()).elidedText(first, Qt::ElideRight, 900), e.primary, e.id);
+        auto* it = addItem(head, QFontMetrics(list_->font()).elidedText(first, Qt::ElideRight, 900), e.primary, e.id, e.notable);
         it->setToolTip(qs(e.summary));
         lastDay = day;
     }

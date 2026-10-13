@@ -26,6 +26,7 @@
 #include "pages/settingspage.h"
 #include "pages/summarypage.h"
 #include "pages/logpage.h"
+#include "pages/aboutpage.h"
 #include "pages/weirdpage.h"
 #include "pages/updatespage.h"
 #include "pages/connectionspage.h"
@@ -49,7 +50,7 @@ const struct { const char* icon; const char* label; } kPages[] = {
     {"scroll-text", "Log"},          {"search", "Weird processes"},   {"info", "System info"},         {"power", "Startup apps"},   {"users", "Users"},         {"cog", "Services"},
     {"cable", "Connections"},        {"package", "Installed apps"}, {"download", "Updates"},     {"chart-pie", "Disk space"},
     {"gauge", "Power & clocks"},
-    {"settings", "Settings"},
+    {"settings", "Settings"},   {"help-circle", "About"},
 };
 
 }  // namespace
@@ -216,6 +217,7 @@ void MainWindow::build() {
     settings_ = new SettingsPage(recorder_);
     log_ = new LogPage;
     weird_ = new WeirdPage;
+    about_ = new AboutPage;
     sysinfo_ = new SystemInfoPage;
     startup_ = new StartupPage;
     users_ = new UsersPage;
@@ -226,7 +228,7 @@ void MainWindow::build() {
     disk_ = new DiskSpacePage;
     power_ = new PowerPage;
     for (QWidget* w : std::initializer_list<QWidget*>{summary_, performance_, processes_, history_, log_, weird_, sysinfo_, startup_, users_, services_,
-                                                      connections_, installed_, updates_, disk_, power_, settings_})
+                                                      connections_, installed_, updates_, disk_, power_, settings_, about_})
         stack_->addWidget(w);
     connect(summary_, &SummaryPage::openHistory, this, [this] { openPage(3); });
     connect(history_, &HistoryPage::showProcess, this, [this](int pid) {

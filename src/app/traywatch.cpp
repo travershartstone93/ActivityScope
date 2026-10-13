@@ -47,6 +47,10 @@ void TrayWatch::check(bool announce) {
     bool all = true;
     for (const QString& item : r.arguments().first().value<QDBusVariant>().variant().toStringList()) {
         QString id = itemProperty(item, "Id");
+        if (id.isEmpty()) {  // did not answer: this pass is not fully answered
+            all = false;
+            continue;
+        }
         // Icons that existed before the first fully answered pass (say,
         // before plasmashell was up after login) are kept visible silently;
         // only icons appearing after that are announced as new.

@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -689,7 +690,16 @@ void test_history_records() {
         c.last_seen = 5015;
         CHECK(st.add_connections({c}).empty());  // known pair: not new again
         st.add_log({{5005, "devices", "Plugged in: ESP32 board", ""}});
+        // A row left open by a crash is closed with an estimated end; a row
+        // matching a live process is left alone.
+        as::ProcessRecord ghost{777, 4000, 0, "ghost", "", "", "", "", "", 1, 1, 0};
+        as::ProcessRecord livep{888, 4500, 0, "alive", "", "", "", "", "", 1, 1, 0};
+        st.add_procs({ghost, livep});
+        CHECK(st.last_sample_time() == 0 || st.last_sample_time() > 0);  // callable either way
+        CHECK(st.close_stale_procs({livep}, 5010) == 1);
+        CHECK(st.close_stale_procs({livep}, 5010) == 0);  // already closed
     }
+
     sqlite3* db = nullptr;
     sqlite3_open(dbp.c_str(), &db);
     sqlite3_stmt* q = nullptr;
@@ -699,10 +709,14 @@ void test_history_records() {
     sqlite3_finalize(q);
     sqlite3_prepare_v2(db, "SELECT COUNT(*), MAX(ended) FROM procs", -1, &q, nullptr);
     sqlite3_step(q);
-    CHECK(sqlite3_column_int(q, 0) == 1 && near(sqlite3_column_double(q, 1), 5010));
+    CHECK(sqlite3_column_int(q, 0) == 3 && near(sqlite3_column_double(q, 1), 5010));
+    sqlite3_finalize(q);
+    sqlite3_prepare_v2(db, "SELECT detail FROM v_timeline WHERE kind='program ended' AND title LIKE 'ghost%'", -1, &q, nullptr);
+    CHECK(sqlite3_step(q) == SQLITE_ROW &&
+          std::string(reinterpret_cast<const char*>(sqlite3_column_text(q, 0))).find("end estimated") != std::string::npos);
     sqlite3_finalize(q);
     sqlite3_close(db);
-    CHECK((kinds == std::vector<std::string>{"program started", "first connection", "log: devices", "program ended"}));
+    CHECK((kinds == std::vector<std::string>{"program started", "first connection", "log: devices", "program ended", "program ended"}));
 }
 
 void test_peerwatch() {
@@ -710,13 +724,15 @@ void test_peerwatch() {
     as::PeerWatch w;
     std::set<std::string> allow = {"syncthing"};
     w.allowed = [&](const std::string& p) { return allow.count(p) > 0; };
-    auto conns = [](const std::string& prog, int n, int base) {
+    auto conns = [](const std::string& prog, int n, int base, int port = 6881) {
         std::vector<as::ConnectionRecord> v;
-        for (int i = 0; i < n; ++i) v.push_back({prog, "/usr/bin/" + prog, "10.0." + std::to_string(base) + "." + std::to_string(i), "TCP", 6881, 42, 0, 0, false});
+        for (int i = 0; i < n; ++i) v.push_back({prog, "/usr/bin/" + prog, "10.0." + std::to_string(base) + "." + std::to_string(i), "TCP", port, 42, 0, 0, false});
         return v;
     };
     // A browser with three servers never alerts.
     CHECK(w.feed(conns("firefox", 3, 1), 0, 100).empty());
+    // Twenty web servers on ordinary ports are browsing, not sharing.
+    CHECK(w.feed(conns("firefox", 20, 9, 443), 0, 100).empty());
     // A torrent client collecting peers over a few rounds alerts once.
     CHECK(w.feed(conns("ktorrent", 5, 2), 300e3, 115).empty());
     auto a = w.feed(conns("ktorrent", 9, 3), 300e3, 130);
@@ -727,6 +743,31 @@ void test_peerwatch() {
     // Peers older than the window are forgotten.
     CHECK(w.feed(conns("transmission", 6, 6), 0, 200).empty());
     CHECK(w.feed(conns("transmission", 4, 7), 0, 900).empty());  // the first 6 expired: only 4 now
+}
+
+void test_notable() {
+    std::puts("routine or notable");
+    as::Event e;
+    e.culprits.push_back({});
+    e.culprits.back().unit = "app-org.kde.konsole-1234.scope";
+
+    e.kinds = as::KindCpu | as::KindHeat;
+    CHECK(!as::event_notable(e));  // your own app working hard is routine
+    e.culprits.back().unit = "vte-spawn-abc123.scope";
+    CHECK(!as::event_notable(e));  // a command you typed in a terminal, too
+    e.min_margin = 4;
+    CHECK(as::event_notable(e));  // nearly shut down: always notable
+    e.min_margin = -1;
+    e.culprits.back().unit = "ollama.service";
+    CHECK(as::event_notable(e));  // a background service is notable
+    e.culprits.back().unit = "app-x.scope";
+    e.triggers = {"Swapping back in at 5 MB/s"};
+    CHECK(as::event_notable(e));  // the machine struggling is notable
+    e.triggers.clear();
+    e.dead_fans = {"CPU fan"};
+    CHECK(as::event_notable(e));
+    as::Event none;
+    CHECK(as::event_notable(none));  // no culprit to blame: show it
 }
 
 void test_updates() {
@@ -855,6 +896,28 @@ void test_upgradecheck() {
 
     auto needed = as::elf_needed("/usr/bin/ls");
     CHECK(std::find(needed.begin(), needed.end(), "libc.so.6") != needed.end());
+    {
+        // A hand-built 32-bit ELF: the lib32 family must not be invisible.
+        std::vector<unsigned char> e(0x200, 0);
+        e[0] = 0x7f; e[1] = 'E'; e[2] = 'L'; e[3] = 'F'; e[4] = 1; e[5] = 1;
+        auto put16 = [&](std::size_t o, uint16_t v) { e[o] = v & 0xff; e[o + 1] = uint8_t(v >> 8); };
+        auto put32 = [&](std::size_t o, uint32_t v) { for (int i = 0; i < 4; ++i) e[o + i] = uint8_t(v >> (8 * i)); };
+        put32(0x20, 0x100); put16(0x2E, 40); put16(0x30, 3);
+        const char* nm = "libtest.so.1";
+        std::memcpy(&e[0x41], nm, std::strlen(nm) + 1);          // .dynstr at 0x40, index 1
+        put32(0x60, 1); put32(0x64, 1);                           // DT_NEEDED -> 1
+        std::size_t s1 = 0x100 + 40, s2 = 0x100 + 80;
+        put32(s1 + 4, 6); put32(s1 + 16, 0x60); put32(s1 + 20, 16); put32(s1 + 24, 2);
+        put32(s2 + 4, 3); put32(s2 + 16, 0x40); put32(s2 + 20, 0x10);
+        std::ofstream f(root + "/elf32", std::ios::binary);
+        f.write(reinterpret_cast<const char*>(e.data()), std::streamsize(e.size()));
+        f.close();
+        auto n32 = as::elf_needed(root + "/elf32");
+        CHECK(n32.size() == 1 && n32[0] == "libtest.so.1");
+    }
+    // A command that never finishes is stopped, not waited on forever.
+    auto slow = as::run_command({"sleep", "30"}, 1);
+    CHECK(slow.out.find("did not finish") != std::string::npos);
     // An AUR program loading a library the upgrade takes away gets a rebuild warning.
     as::Runner lib = [&](const std::vector<std::string>& a) -> as::CmdResult {
         if (a[1] == "-Sup") return {0, "glibc 3.0-1\n"};
@@ -910,6 +973,7 @@ int main() {
     test_logbook();
     test_history_records();
     test_peerwatch();
+    test_notable();
     test_updates();
     test_upgradecheck();
     std::printf("%d checks, %d failed\n", checks, failures);
