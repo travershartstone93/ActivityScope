@@ -1,0 +1,287 @@
+#!/usr/bin/env python3
+"""hindsight: a config time machine and a one-question investigator.
+
+hindsight snap            take a snapshot of /etc and your config files
+hindsight "2 days ago"    the story since then: events, config changes, packages
+hindsight diff            the config changes of the latest snapshot
+hindsight diff "2 weeks ago"   everything that changed in config since then
+
+Snapshots live in a private local git repository under
+~/.local/share/hindsight (mode 700). Nothing is ever sent anywhere, nothing
+runs as root, and known secret stores are never copied in.
+"""
+
+import os
+import re
+import signal
+import sqlite3
+import subprocess
+import sys
+import time
+
+# The HINDSIGHT_* variables exist so the test suite can run the whole tool
+# against a sandbox; normal runs never set them.
+HOME = os.environ.get("HINDSIGHT_HOME", os.path.expanduser("~"))
+ETC = os.environ.get("HINDSIGHT_ETC", "/etc")
+DATA = os.environ.get("HINDSIGHT_DATA", os.path.join(HOME, ".local/share/hindsight"))
+REPO = os.path.join(DATA, "repo")
+AS_DB = os.environ.get("HINDSIGHT_AS_DB", os.path.join(HOME, ".local/share/activityscope/history.db"))
+PACMAN_LOG = os.environ.get("HINDSIGHT_PACMAN_LOG", "/var/log/pacman.log")
+
+# Never copied: secret stores, caches, and bulk data. Matched against the
+# path below each source root, the way rsync sees it.
+EXCLUDES = [
+    # secrets and credentials
+    "gh/", "kwalletd/", "kwalletrc", "ms365-mcp/", "*token*", "*secret*",
+    "*password*", "*credential*", "*.pem", "*.key", "*keyring*", "id_rsa*",
+    "id_ed25519*", "*.gpg", "gnupg/",
+    # caches and bulk data, not configuration
+    "*Cache*", "*cache*", "CachedData/", "GPUCache/", "Service Worker/",
+    "Crash Reports/", "logs/", "blob_storage/", "chromium/", "firefox/", "mozilla/",
+    "google-chrome-for-testing/", "balenaEtcher/", "ghidra/", "containers/",
+    "*.log", "*.sqlite", "*.sqlite-wal", "*.sqlite-shm", "*.db",
+    # /etc side: key material and binary stores
+    "ssl/", "ca-certificates/", "pacman.d/gnupg/", "credstore*/",
+]
+
+# What the snapshot covers: (source, name inside the repository).
+SOURCES = [
+    (ETC + "/", "etc/"),
+    (HOME + "/.config/", "home/config/"),
+]
+SINGLE_FILES = [".bashrc", ".zshrc", ".profile", ".gitconfig",
+                ".claude/settings.json", ".claude/CLAUDE.md",
+                ".claude/keybindings.json"]
+
+
+def run(args, **kw):
+    return subprocess.run(args, capture_output=True, text=True, **kw)
+
+
+def git(*args):
+    return run(["git", "-C", REPO, *args])
+
+
+def ensure_repo():
+    os.makedirs(REPO, exist_ok=True)
+    os.chmod(DATA, 0o700)
+    if not os.path.isdir(os.path.join(REPO, ".git")):
+        git("init", "-q")
+        git("config", "user.name", "hindsight")
+        git("config", "user.email", "hindsight@localhost")
+
+
+def snap(reason):
+    ensure_repo()
+    base = ["rsync", "-a", "--delete", "--max-size=512K", "--prune-empty-dirs", "--delete-excluded"]
+    for pattern in EXCLUDES:
+        base.append("--exclude=" + pattern)
+    for src, dst in SOURCES:
+        target = os.path.join(REPO, dst)
+        os.makedirs(target, exist_ok=True)
+        r = run(base + [src, target])
+        # 23 and 24 mean "some files could not be read or vanished", which is
+        # normal for /etc without root; everything readable was copied.
+        if r.returncode not in (0, 23, 24):
+            print("hindsight: copying %s failed: %s" % (src, r.stderr.strip()), file=sys.stderr)
+    singles = os.path.join(REPO, "home")
+    os.makedirs(singles, exist_ok=True)
+    for name in SINGLE_FILES:
+        src = os.path.join(HOME, name)
+        if os.path.isfile(src):
+            dst = os.path.join(singles, name.replace("/", "__"))
+            run(["cp", "-p", src, dst])
+    git("add", "-A")
+    if git("diff", "--cached", "--quiet").returncode == 0:
+        print("No changes since the last snapshot.")
+        return
+    stat = git("diff", "--cached", "--stat").stdout.strip().splitlines()
+    when = time.strftime("%Y-%m-%d %H:%M")
+    git("commit", "-q", "-m", "snapshot %s (%s)" % (when, reason))
+    print("Snapshot taken (%s): %s" % (reason, stat[-1].strip() if stat else "changes recorded"))
+
+
+def parse_when(text):
+    r = run(["date", "-d", text, "+%s"])
+    if r.returncode != 0:
+        sys.exit('hindsight: could not understand the time "%s"' % text)
+    return int(r.stdout.strip())
+
+
+def trim(text, limit=170):
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    return text[:limit].rsplit(" ", 1)[0] + " ..."
+
+
+def activityscope_entries(since, with_programs):
+    out = []
+    if not os.path.exists(AS_DB):
+        return out
+    try:
+        db = sqlite3.connect("file:%s?mode=ro" % AS_DB, uri=True, timeout=5)
+    except sqlite3.Error:
+        return out
+    try:
+        # the software category repeats what pacman's own log tells better
+        for t, cat, title in db.execute(
+                "SELECT t, category, title FROM log WHERE t >= ? AND category != 'software' ORDER BY t", (since,)):
+            out.append((t, "log " + cat, trim(title)))
+        for t, notable, summary in db.execute(
+                "SELECT start, IFNULL(notable,1), summary FROM events WHERE start >= ? ORDER BY start", (since,)):
+            tag = "event" if notable else "routine"
+            text = re.sub(r"^[0-9:]+ to [0-9:]+ \([^)]*\)\. ", "", summary)
+            out.append((t, tag, trim(text)))
+        if with_programs:
+            for t, kind, title in db.execute(
+                    "SELECT t, kind, title FROM v_timeline WHERE t >= ? AND kind LIKE 'program %'", (since,)):
+                out.append((t, kind.replace("program ", "prog "), trim(title)))
+    except sqlite3.Error as e:
+        out.append((since, "note", "ActivityScope history could not be read: %s" % e))
+    db.close()
+    return out
+
+
+def config_entries(since, show_diff):
+    out = []
+    if not os.path.isdir(os.path.join(REPO, ".git")):
+        return out
+    # Filtered here, not with git --since: git reads a date it cannot parse
+    # as "now" without a word of complaint.
+    log = git("log", "--format=%at|%H|%s").stdout.strip()
+    for line in reversed(log.splitlines()):
+        at, commit, subject = line.split("|", 2)
+        if int(at) < since:
+            continue
+        files = [f for f in git("show", "--name-only", "--format=", commit).stdout.splitlines() if f]
+        shown = ", ".join(os.path.basename(f) for f in files[:6])
+        more = "" if len(files) <= 6 else " and %d more" % (len(files) - 6)
+        reason = re.search(r"\(([^)]*)\)$", subject)
+        text = "%d config file%s changed: %s%s [%s]" % (
+            len(files), "" if len(files) == 1 else "s", shown, more,
+            reason.group(1) if reason else "snapshot")
+        out.append((int(at), "config", text))
+        if show_diff:
+            out.append((int(at) + 0.001, "config", "\n" + git("show", "--format=", commit).stdout))
+    return out
+
+
+def pacman_entries(since):
+    out = []
+    try:
+        with open(PACMAN_LOG, errors="replace") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return out
+    batch = []
+
+    def flush():
+        if not batch:
+            return
+        t0 = batch[0][0]
+        kinds = {}
+        for _, action, pkg in batch:
+            kinds.setdefault(action, []).append(pkg)
+        parts = []
+        for action, pkgs in kinds.items():
+            if len(pkgs) > 10:
+                parts.append("%s %d packages" % (action, len(pkgs)))
+            else:
+                parts.append("%s %s" % (action, ", ".join(pkgs)))
+        out.append((t0, "pacman", "; ".join(parts)))
+        batch.clear()
+
+    last_t = 0
+    for line in lines:
+        m = re.match(r"\[([0-9T:+-]+)\] \[ALPM\] (installed|removed|upgraded|downgraded) ([^ ]+)", line)
+        if not m:
+            continue
+        try:
+            t = time.mktime(time.strptime(m.group(1)[:19], "%Y-%m-%dT%H:%M:%S"))
+        except ValueError:
+            continue
+        if t < since:
+            continue
+        if batch and t - last_t > 600:
+            flush()
+        batch.append((t, m.group(2), m.group(3)))
+        last_t = t
+    flush()
+    return out
+
+
+def story(when_text, with_programs, show_diff):
+    since = parse_when(when_text)
+    entries = (activityscope_entries(since, with_programs)
+               + config_entries(since, show_diff) + pacman_entries(since))
+    entries.sort(key=lambda e: e[0])
+    if not entries:
+        print("Nothing recorded since %s." % when_text)
+        return
+    day = ""
+    for t, tag, text in entries:
+        d = time.strftime("%a %Y-%m-%d", time.localtime(t))
+        if d != day:
+            day = d
+            print("\n%s" % d)
+        if text.startswith("\n"):
+            print(text)
+        else:
+            print("  %s  %-10s %s" % (time.strftime("%H:%M", time.localtime(t)), tag, text))
+
+
+def main():
+    # Piping into head or less closes the pipe early; end quietly then.
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        return
+    if args[0] == "snap":
+        reason = "manual"
+        if "--reason" in args:
+            reason = args[args.index("--reason") + 1]
+        snap(reason)
+        return
+    if args[0] == "diff":
+        if not os.path.isdir(os.path.join(REPO, ".git")):
+            sys.exit("hindsight: no snapshots yet; run hindsight snap first")
+        if len(args) < 2:
+            sys.stdout.write(git("show", "HEAD").stdout)
+            return
+        target = " ".join(args[1:])
+        # A git id is taken as such; anything else is read as a time, and the
+        # answer is one cumulative diff from the snapshot nearest before it.
+        if git("rev-parse", "--verify", "--quiet", target + "^{commit}").returncode == 0:
+            sys.stdout.write(git("show", target).stdout)
+            return
+        since = parse_when(target)
+        # The base is the newest snapshot at or before that moment, found
+        # from the commit times directly (git's own date parsing quietly
+        # reads an unparseable date as "now", which would hide everything).
+        base = ""
+        history = git("log", "--format=%at %H").stdout.splitlines()
+        for line in history:
+            at, commit = line.split()
+            if int(at) <= since:
+                base = commit
+                break
+        if not base and history:
+            print('No snapshot existed yet at "%s"; comparing against the oldest one.' % target)
+            base = history[-1].split()[1]
+        if base == git("rev-parse", "HEAD").stdout.strip():
+            print('Nothing has changed in config since "%s".' % target)
+            return
+        when = git("show", "-s", "--format=%ci", base).stdout.strip()
+        print('Config changes since the snapshot of %s:' % when[:16])
+        sys.stdout.write(git("diff", base, "HEAD").stdout)
+        return
+    with_programs = "--programs" in args
+    show_diff = "--diff" in args
+    when = " ".join(a for a in args if not a.startswith("--"))
+    story(when or "1 day ago", with_programs, show_diff)
+
+
+if __name__ == "__main__":
+    main()

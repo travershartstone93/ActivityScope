@@ -1,0 +1,7 @@
+[Unit]
+Description=hindsight config snapshot
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/hindsight snap --reason scheduled
+Nice=19

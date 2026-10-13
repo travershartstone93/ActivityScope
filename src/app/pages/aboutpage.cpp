@@ -87,6 +87,10 @@ AboutPage::AboutPage(QWidget* parent) : QWidget(parent) {
         "distribution's own signed package data. A system-wide installation of weird is preferred when present; "
         "otherwise the copy shipped with this program is used, so nothing else needs installing."));
     kit->body()->addWidget(para(
+        "The hindsight command, installed alongside, is the config time machine: a daily snapshot of /etc and your "
+        "config files into a private local repository (plus one before every update run from here), and one question, "
+        "hindsight \"2 days ago\", that interleaves events, config changes and package history into a single story."));
+    kit->body()->addWidget(para(
         "The whole history is one SQLite file, made to be read by people and their tools alike: " +
         QString::fromStdString(as::default_db_path())));
     left->addWidget(kit);

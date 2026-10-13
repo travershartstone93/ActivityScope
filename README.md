@@ -180,6 +180,24 @@ appears), fstab, crontab, passwd and group, system and per-user services,
 system autostart, `profile.d`, cron folders, udev rules, kernel module settings
 and pacman hooks. Files the user cannot read are still reported as changed.
 
+## hindsight: the config time machine
+
+The question history alone cannot answer is "what changed?". hindsight,
+installed alongside the app, answers it:
+
+    hindsight snap            take a snapshot of /etc and your config files
+    hindsight "2 days ago"    the story since then, in time order
+    hindsight diff "2 weeks ago"   everything that changed in config since
+
+Snapshots are commits in a private local git repository at
+~/.local/share/hindsight/repo (mode 700, never pushed anywhere). A daily
+timer takes one, the Updates page takes one before running an upgrade, and
+credential stores, keys, caches, browser profiles and anything over 512 KB
+are never copied, so no snapshot ever needs root or holds a secret. The
+story interleaves ActivityScope's events and log, config changes and
+pacman's history into one chronological answer. Its tests:
+python3 -m unittest discover -s tests -p "test_hindsight.py"
+
 ## Answering "what just happened?" from a terminal
 
 Everything is in one SQLite file, `~/.local/share/activityscope/history.db`:

@@ -18,11 +18,14 @@ cmake --install build --prefix "$PREFIX" >/dev/null
 
 # Start recording at login, and now.
 mkdir -p "$HOME/.config/systemd/user"
-cp systemd/activityscope.service "$HOME/.config/systemd/user/"
+cp systemd/activityscope.service systemd/hindsight-snap.service systemd/hindsight-snap.timer "$HOME/.config/systemd/user/"
 systemctl --user daemon-reload
 systemctl --user enable activityscope.service
 # A restart rather than a plain start, so an upgrade takes effect at once.
 systemctl --user restart activityscope.service
+# The daily config snapshot (hindsight) and one baseline right away.
+systemctl --user enable --now hindsight-snap.timer
+"$PREFIX/bin/hindsight" snap --reason "installed" || true
 
 # The bundled weird scanner, as a command too, unless one is already installed.
 if ! command -v weird >/dev/null && [ ! -e "$PREFIX/bin/weird" ]; then
