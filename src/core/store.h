@@ -4,6 +4,8 @@
 
 #include "events.h"
 #include "logbook.h"
+#include "netlog.h"
+#include "processlog.h"
 #include "snapshot.h"
 
 struct sqlite3;
@@ -54,6 +56,11 @@ public:
     bool exe_seen(const std::string& exe) const;
     void mark_exe(const std::string& exe);
     void prune_log(double now, double days);
+
+    // Every program that ran, and who connected where.
+    void add_procs(const std::vector<ProcessRecord>& records);
+    // Returns the records that were never seen before (by program, address, port).
+    std::vector<ConnectionRecord> add_connections(const std::vector<ConnectionRecord>& records);
     bool boot_seen(const std::string& id) const;
     void mark_boot(const std::string& id);
 

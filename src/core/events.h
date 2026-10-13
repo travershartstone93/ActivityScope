@@ -22,7 +22,7 @@ struct Triggers {
     int growth_window = 10;
     double disk_busy = 60;      double disk_mbps = 50;   int disk_secs = 3;
     double gpu = 50;            int gpu_secs = 3;        double vram_jump_mb = 500;
-    double temp = 85;           double temp_rise = 15;   int temp_window = 30;
+    double temp = 85;           double temp_rise = 25;   int temp_window = 30;
     double fan = 85;            double fan_step = 20;
     double shutdown_margin = 10;   // degrees below the kernel's shutdown point
     int preroll = 60;
@@ -121,6 +121,8 @@ private:
 };
 
 std::string describe(const Event& e);
+// False for a blip: under 5 s, no program stood out, nowhere near shutdown.
+bool worth_keeping(const Event& e);
 std::string kind_names(unsigned kinds);
 std::string clock_time(double epoch);
 std::string human_bytes(double bytes);

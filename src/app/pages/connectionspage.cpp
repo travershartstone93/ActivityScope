@@ -4,9 +4,7 @@
 #include <QDir>
 #include <QFile>
 #include <QHBoxLayout>
-#include <QHostAddress>
 #include <QVBoxLayout>
-#include <arpa/inet.h>
 #include <unistd.h>
 
 #include <unordered_map>
@@ -14,31 +12,17 @@
 #include "../format.h"
 #include "../live.h"
 #include "common.h"
+#include "fs.h"
+#include "netlog.h"
 
 namespace {
 
-// /proc/net addresses are hex in network byte order: "0100007F:0035".
-QString address(const QString& hex, bool v6) {
-    QString ip = hex.section(':', 0, 0), port = hex.section(':', 1, 1);
-    int p = port.toInt(nullptr, 16);
-    QHostAddress a;
-    if (!v6) {
-        quint32 raw = ip.toUInt(nullptr, 16);
-        a.setAddress(ntohl(raw));
-    } else {
-        Q_IPV6ADDR bytes{};
-        for (int w = 0; w < 4; ++w) {
-            quint32 word = ip.mid(w * 8, 8).toUInt(nullptr, 16);  // each 32-bit word is little-endian
-            for (int b = 0; b < 4; ++b) bytes[w * 4 + b] = quint8((word >> (8 * b)) & 0xff);
-        }
-        a.setAddress(bytes);
-        bool ok = false;
-        QHostAddress v4(a.toIPv4Address(&ok));
-        if (ok) a = v4;
-    }
-    QString text = a.toString();
+// The decoding lives in the core (as::parse_proc_net); this only composes
+// the display text.
+QString address(const std::string& ip, int port) {
+    QString text = QString::fromStdString(ip);
     if (text.contains(':')) text = "[" + text + "]";
-    return p ? text + ":" + QString::number(p) : text + ":*";
+    return port ? text + ":" + QString::number(port) : text + ":*";
 }
 
 const char* tcpState(int s) {
@@ -99,34 +83,25 @@ void ConnectionsPage::reload() {
     tree_->clear();
     int total = 0, shown = 0;
     for (const char* proto : {"tcp", "tcp6", "udp", "udp6"}) {
-        QFile f(QString("/proc/net/") + proto);
-        if (!f.open(QIODevice::ReadOnly)) continue;
-        const bool v6 = QString(proto).endsWith('6'), tcp = QString(proto).startsWith("tcp");
-        bool header = true;
-        for (const auto& line : QString::fromUtf8(f.readAll()).split('\n')) {
-            if (header) {
-                header = false;
-                continue;
-            }
-            auto f2 = line.simplified().split(' ');
-            if (f2.size() < 10) continue;
-            int state = f2[3].toInt(nullptr, 16);
-            QString remote = address(f2[2], v6);
-            bool listen = tcp ? state == 10 : remote.endsWith(":*");
+        auto text = as::read_file(QString("/proc/net/%1").arg(proto).toStdString(), 4 << 20);
+        if (!text) continue;
+        const bool tcp = QString(proto).startsWith("tcp");
+        for (const auto& sock : as::parse_proc_net(*text, proto)) {
+            bool listen = tcp ? sock.state == 10 : sock.remote_port == 0;
             ++total;
             if (listen && !listening_->isChecked()) continue;
             ++shown;
-            auto o = owner.find(f2[9]);
+            auto o = owner.find(QString::number(sock.inode));
             auto* it = new NumItem(tree_);
-            it->setText(0, o != owner.end() ? o->second.second : (f2[7].toInt() == me ? "closed or system socket" : "another account"));
+            it->setText(0, o != owner.end() ? o->second.second : (sock.uid == me ? "closed or system socket" : "another account"));
             if (o != owner.end()) {
                 it->setText(1, QString::number(o->second.first));
                 it->setData(1, Qt::UserRole, o->second.first);
             }
             it->setText(2, tcp ? "TCP" : "UDP");
-            it->setText(3, address(f2[1], v6));
-            it->setText(4, listen ? "" : remote);
-            it->setText(5, tcp ? tcpState(state) : listen ? "listening" : "");
+            it->setText(3, address(sock.local, sock.local_port));
+            it->setText(4, listen ? "" : address(sock.remote, sock.remote_port));
+            it->setText(5, tcp ? tcpState(sock.state) : listen ? "listening" : "");
             it->setForeground(0, o != owner.end() ? pal().text : pal().dim);
             it->setIcon(0, iconPixmap("globe", listen ? pal().faint : pal().network, 18));
             if (keep == it->text(3) + it->text(4)) tree_->setCurrentItem(it);

@@ -341,7 +341,8 @@ std::vector<Event> EventEngine::feed(const SnapshotPtr& s) {
         bool calm_long_enough = s->wall - ev_->last_active >= t_.merge;
         bool too_long = s->wall - ev_->start > 1800;
         if (calm_long_enough || too_long) {
-            closed.push_back(finish(true));
+            Event done = finish(true);
+            if (worth_keeping(done)) closed.push_back(std::move(done));
             ev_.reset();
             acc_.clear();
             unit_cpu_.clear();
@@ -663,6 +664,14 @@ std::string describe(const Event& e) {
     }
     if (!any) s += " No single program stood out.";
     return s;
+}
+
+bool worth_keeping(const Event& e) {
+    if (e.end - e.start >= 5) return true;
+    if (e.min_margin >= 0 && e.min_margin <= 15) return true;  // came close to shutting down
+    for (unsigned kind : {KindCpu, KindMemory, KindDisk, KindGpu})
+        if ((e.kinds & kind) && !leaders(e.culprits, kind).empty()) return true;
+    return false;
 }
 
 }  // namespace as

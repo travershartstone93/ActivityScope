@@ -30,10 +30,15 @@ void Card::paintEvent(QPaintEvent*) {
     QColor bg = hi_ ? P.panelHi : P.panel;
     if (tint_.isValid()) {
         QLinearGradient g(r.topLeft(), r.bottomLeft());
-        g.setColorAt(0, QColor::fromRgbF(bg.redF() * 0.8 + tint_.redF() * 0.2, bg.greenF() * 0.8 + tint_.greenF() * 0.2,
-                                         bg.blueF() * 0.8 + tint_.blueF() * 0.2));
-        g.setColorAt(1, QColor::fromRgbF(bg.redF() * 0.9 + tint_.redF() * 0.1, bg.greenF() * 0.9 + tint_.greenF() * 0.1,
-                                         bg.blueF() * 0.9 + tint_.blueF() * 0.1));
+        auto mix = [&](double t) {
+            return QColor::fromRgbF(bg.redF() * (1 - t) + tint_.redF() * t, bg.greenF() * (1 - t) + tint_.greenF() * t,
+                                    bg.blueF() * (1 - t) + tint_.blueF() * t);
+        };
+        // Every dark palette gets the quiet tiles; only Light keeps the
+        // stronger wash, which reads correctly on a white panel.
+        const bool dark = P.name != "Light";
+        g.setColorAt(0, mix(dark ? 0.08 : 0.2));
+        g.setColorAt(1, mix(dark ? 0.03 : 0.1));
         p.setBrush(g);
         p.setPen(QPen(withAlpha(tint_, 120), 1.2));
     } else {

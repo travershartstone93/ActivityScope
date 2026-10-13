@@ -11,7 +11,7 @@ ExecStart=%h/.local/bin/activityscope --hidden
 Restart=on-failure
 RestartSec=5
 Nice=10
-MemoryMax=300M
+MemoryHigh=300M
 
 [Install]
 WantedBy=graphical-session.target

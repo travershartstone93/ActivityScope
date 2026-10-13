@@ -75,6 +75,25 @@ Store::Store(std::string path) {
     exec("CREATE INDEX IF NOT EXISTS log_t ON log(t)");
     exec("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)");
     exec("CREATE TABLE IF NOT EXISTS seen_exes(exe TEXT PRIMARY KEY)");
+    exec(R"(CREATE TABLE IF NOT EXISTS procs(
+        pid INTEGER, started REAL, ended REAL, name TEXT, exe TEXT, cmdline TEXT, user TEXT, unit TEXT,
+        ppid INTEGER, parent TEXT, cpu_seconds REAL, peak_rss REAL, UNIQUE(pid, started)))");
+    exec("CREATE INDEX IF NOT EXISTS procs_started ON procs(started)");
+    exec("CREATE INDEX IF NOT EXISTS procs_ended ON procs(ended)");
+    exec(R"(CREATE TABLE IF NOT EXISTS connections(
+        program TEXT, exe TEXT, remote TEXT, port INTEGER, proto TEXT, first_seen REAL, last_seen REAL,
+        UNIQUE(program, remote, port, proto)))");
+    exec("CREATE INDEX IF NOT EXISTS connections_seen ON connections(first_seen)");
+    // Everything in time order, for "what happened at 14:32?" in one query.
+    exec("DROP VIEW IF EXISTS v_timeline");
+    exec(R"(CREATE VIEW v_timeline AS
+        SELECT t, 'log: ' || category AS kind, title, detail FROM log
+        UNION ALL SELECT start, 'resource event', summary, triggers FROM events
+        UNION ALL SELECT started, 'program started', name || ' (PID ' || pid || ', from ' || IFNULL(parent, '?') || ')', cmdline FROM procs
+        UNION ALL SELECT ended, 'program ended', name || ' (PID ' || pid || ')',
+                         printf('ran %.0f s, used %.1f s of CPU, peak memory %.0f MB', ended - started, cpu_seconds, peak_rss / 1e6)
+                  FROM procs WHERE ended IS NOT NULL AND NOT (ended - started < 10 AND cpu_seconds < 0.1)
+        UNION ALL SELECT first_seen, 'first connection', program || ' to ' || remote || ':' || port, proto || ', ' || IFNULL(exe, '') FROM connections)");
     exec(R"(CREATE TABLE IF NOT EXISTS event_samples(
         event_id INTEGER, t REAL, cpu REAL, mem_pct REAL, pressure REAL, disk_bps REAL,
         gpu REAL, temp REAL, fan REAL))");
@@ -396,6 +415,50 @@ void Store::mark_exe(const std::string& exe) {
 void Store::prune_log(double now, double days) {
     if (!db_) return;
     Stmt(db_, "DELETE FROM log WHERE t < ?").bind(1, now - days * 86400).run();
+    // Program and connection history are kept 30 days.
+    Stmt(db_, "DELETE FROM procs WHERE COALESCE(ended, started) < ?").bind(1, now - 30 * 86400.0).run();
+    Stmt(db_, "DELETE FROM connections WHERE last_seen < ?").bind(1, now - 30 * 86400.0).run();
+}
+
+void Store::add_procs(const std::vector<ProcessRecord>& records) {
+    if (!db_ || records.empty()) return;
+    exec("BEGIN");
+    {
+        Stmt st(db_, "INSERT INTO procs VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(pid, started) DO UPDATE SET "
+                     "ended = COALESCE(excluded.ended, ended), cpu_seconds = excluded.cpu_seconds, "
+                     "peak_rss = MAX(peak_rss, excluded.peak_rss)");
+        for (const auto& r : records) {
+            st.bind(1, int64_t(r.pid)).bind(2, r.started);
+            if (r.ended > 0) st.bind(3, r.ended);
+            else sqlite3_bind_null(st.s, 3);
+            st.bind(4, r.name).bind(5, r.exe).bind(6, r.cmdline).bind(7, r.user).bind(8, r.unit).bind(9, int64_t(r.ppid))
+                .bind(10, r.parent).bind(11, r.cpu_seconds).bind(12, double(r.peak_rss));
+            st.run();
+        }
+    }
+    exec("COMMIT");
+}
+
+std::vector<ConnectionRecord> Store::add_connections(const std::vector<ConnectionRecord>& records) {
+    std::vector<ConnectionRecord> fresh;
+    if (!db_ || records.empty()) return fresh;
+    exec("BEGIN");
+    {
+        Stmt seen(db_, "SELECT 1 FROM connections WHERE program=? AND remote=? AND port=? AND proto=?");
+        Stmt up(db_, "INSERT INTO connections VALUES(?,?,?,?,?,?,?) ON CONFLICT(program, remote, port, proto) DO UPDATE SET "
+                     "last_seen = excluded.last_seen, exe = COALESCE(NULLIF(excluded.exe, ''), exe)");
+        for (const auto& r : records) {
+            if (r.is_new) {
+                seen.bind(1, r.program).bind(2, r.remote).bind(3, int64_t(r.port)).bind(4, r.proto);
+                if (!seen.step()) fresh.push_back(r);
+                sqlite3_reset(seen.s);
+            }
+            up.bind(1, r.program).bind(2, r.exe).bind(3, r.remote).bind(4, int64_t(r.port)).bind(5, r.proto).bind(6, r.first_seen).bind(7, r.last_seen);
+            up.run();
+        }
+    }
+    exec("COMMIT");
+    return fresh;
 }
 
 }  // namespace as

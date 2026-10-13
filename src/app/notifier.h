@@ -11,11 +11,13 @@ class Notifier : public QObject {
 public:
     explicit Notifier(QObject* parent = nullptr);
     void onSample(const as::SnapshotPtr& s);
+    void sharing(const QString& program, int pid, quint64 startTicks, int peers, double uploadBps);
     static const as::ProcessInfo* heatCulprit(const as::Snapshot& s, bool* pausable = nullptr);
     static bool danger(const as::Snapshot& s);
 
 signals:
     void openRequested();
+    void allowSharer(const QString& program);
 
 private slots:
     void onAction(uint id, const QString& action);

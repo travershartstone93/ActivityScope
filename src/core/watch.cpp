@@ -89,7 +89,7 @@ LogWatch::LogWatch(Store* store) : store_(store) {
 
     // The system journal, resumed where the last run stopped so nothing that
     // happened while ActivityScope was closed (or the machine was off) is lost.
-    if (sd_journal_open(&journal_, SD_JOURNAL_LOCAL_ONLY) == 0) {
+    if (sd_journal_open(&journal_, SD_JOURNAL_LOCAL_ONLY | SD_JOURNAL_SYSTEM | SD_JOURNAL_CURRENT_USER) == 0) {
         for (const char* id : {"sudo", "pkexec", "polkitd", "systemd-sleep", "systemd-logind", "NetworkManager", "tailscaled",
                                "systemd", "systemd-coredump"}) {
             std::string m = std::string("SYSLOG_IDENTIFIER=") + id;

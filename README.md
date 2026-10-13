@@ -30,12 +30,49 @@ Written in C++20 with Qt 6. It never asks for root.
   port, board and firmware file), packages installed or removed, sudo and
   pkexec commands, sleep, wake, lid and power changes, network changes,
   failed services, crashes and out-of-memory kills, and programs run for the
-  first time from outside the system folders. Searchable, filterable by kind,
-  and exportable as a text file.
+  first time from outside the system folders, changes to the places programs
+  use to start themselves (with the lines added or removed), and the first
+  connection made by any program from outside the system folders. Searchable,
+  filterable by kind, and exportable as a text file.
+- **Background sharing warning.** When a program talks to 8 or more different
+  computers within 10 minutes (the way torrent clients do) and you have not
+  allowed it, a notification names it, with buttons to quit it or allow it.
+- **Program and connection history.** Every program that ran (long enough to
+  be seen, about one to three seconds) with its command line, parent, user,
+  start, end, CPU time and peak memory; and every program-to-address pair with
+  when it was first and last seen. Kept 30 days.
 - **System pages.** System info, startup apps (with on and off switches),
   users and their sessions, services (start, stop and restart your own),
   network connections by program, installed apps with their package, version
   and size, disk space with a folder-size scan, and power and clock speeds.
+- **Updates, on request only.** Nothing is checked or installed until you
+  press a button. Check for updates lists every pending package from the
+  official repositories (through `checkupdates`, which never touches the
+  system's own package database) and the AUR (through `paru`), marks the ones
+  that need a restart. Each package has an Update and a Hold button, and Update all runs the full
+  upgrade. Updates run in a visible terminal where you type your password.
+  Packages held in `pacman.conf` (`IgnorePkg`) or with the Hold button are
+  never touched: they are passed to pacman and paru as `--ignore`.
+- **Conflict alerts.** After a check, Update all is rehearsed on a scratch
+  copy of the package database (no root, nothing on the system changes). When
+  pacman would refuse, the reason is explained in plain words with the facts
+  behind it and a fix, and the fix is applied to the copy and the rehearsal
+  repeated, so the alert can say the fix was tested. Fixes are buttons: remove
+  packages that were dropped from the repositories (the exact removal list
+  comes from pacman's own preview), hold a package, or rebuild an AUR package.
+  It also warns about AUR programs that load a library the upgrade removes,
+  kernels whose headers lag behind installed DKMS drivers, held packages whose
+  requirements or libraries the upgrade breaks, a new Python minor version
+  (pip packages, virtual environments and AUR Python packages that need
+  redoing), and too little disk space.
+- **Weird processes.** A front end for the `weird` command (npm package
+  thatsweird), which judges whether what is running and installed can be
+  trusted from the distribution's own signed package data. Scans run only on
+  the button, as the user, never as root. Findings appear in weird's own
+  plain words, worst first, with the full explanation, the MITRE ATT&CK
+  technique where weird names one, a jump to the live process, and a Trust
+  button that pins a program's fingerprint so later scans stay quiet until
+  the file changes. If weird is not installed the page says how to get it.
 - **Popout.** A small always-on-top readout of CPU, memory, GPU, heat and fan.
 - **Always recording.** The app lives in the system tray. Closing the window
   keeps it recording; quitting from the tray menu stops it.
@@ -104,6 +141,17 @@ list for flashing and disk tools. Repeats are folded ("zsh crashed 8 times
 between 16:23:01 and 16:23:12"). Without root it cannot see which files were
 copied to or from a drive, only that the drive came and went.
 
+## Startup locations it watches
+
+Changes to these are logged with the lines that were added or removed:
+your autostart folder, your systemd user services (including the `.wants`
+links that enable them), `~/.local/bin`, shell startup files (bash, zsh, fish,
+profile), Plasma login and logout scripts, session environment files, and in
+`/etc`: hosts, environment, `ld.so.preload` (flagged as a warning when it
+appears), fstab, crontab, passwd and group, system and per-user services,
+system autostart, `profile.d`, cron folders, udev rules, kernel module settings
+and pacman hooks. Files the user cannot read are still reported as changed.
+
 ## Answering "what just happened?" from a terminal
 
 Everything is in one SQLite file, `~/.local/share/activityscope/history.db`:
@@ -115,7 +163,18 @@ sqlite3 ~/.local/share/activityscope/history.db \
 
 Tables: `samples` (one row per second, kept 24 hours), `minute_top` (the
 busiest programs of each minute, kept 24 hours), `events`, `event_culprits`
-and `event_samples` (kept 30 days), and `log` (kept 90 days):
+and `event_samples` (kept 30 days), `log` (kept 90 days), and `procs` and
+`connections` (kept 30 days). The `v_timeline` view puts log entries, resource
+events, program starts and ends, and first connections in one time-ordered
+list, so a moment can be examined with a single query:
+
+```sh
+sqlite3 ~/.local/share/activityscope/history.db \
+  "select datetime(t,'unixepoch','localtime'), kind, title from v_timeline
+   where t between strftime('%s','2026-10-10 14:25','utc') and strftime('%s','2026-10-10 14:40','utc') order by t"
+```
+
+The plain log on its own:
 
 ```sh
 sqlite3 ~/.local/share/activityscope/history.db \
@@ -137,8 +196,9 @@ Keys: `window`, `panel`, `text`, `dim`, `cpu`, `memory`, `gpu`, `heat`, `fan`.
 
 ## Cost
 
-Measured on an i7-10750H laptop while hidden in the tray: about 0.65 s of CPU
-per minute (roughly 1% of one core) and 100 to 160 MB of memory. All processes
+Measured on an i7-10750H laptop while hidden in the tray: about 0.75 s of CPU
+per minute (roughly 1.3% of one core) and about 75 MB of its own memory, plus
+shared libraries and system-log pages the kernel can reclaim at any time. All processes
 are scanned every second while the machine is busy and every 3 s while it is
 calm, which loses nothing because CPU time is averaged over the gap. Slow
 sensors are read less often: the battery every 10 s (each read takes about

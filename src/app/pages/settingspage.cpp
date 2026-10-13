@@ -78,7 +78,9 @@ void SettingsPage::applySaved(Recorder* r) {
     double hours = st.value("detail_hours", 24).toDouble();
     double days = st.value("event_days", 30).toDouble();
     double logDays = st.value("log_days", 90).toDouble();
-    QMetaObject::invokeMethod(r, [r, t, ms, hours, days, logDays] {
+    QStringList allowed = st.value("allowed_sharers").toStringList();
+    QMetaObject::invokeMethod(r, [r, t, ms, hours, days, logDays, allowed] {
+        r->setAllowedSharers(allowed);
         r->setTriggers(t);
         r->setInterval(ms);
         r->setRetention(hours, days, logDays);
@@ -197,6 +199,29 @@ SettingsPage::SettingsPage(Recorder* r, QWidget* parent) : QWidget(parent), reco
                                  "pause it; a paused process keeps its work and carries on when you resume it."));
     left->addWidget(heat);
 
+    auto* share = new Card("globe", "Hidden activity");
+    QStringList allowed = st.value("allowed_sharers").toStringList();
+    auto* allowedLbl = note(allowed.isEmpty() ? "No programs are allowed to share in the background yet."
+                                              : "Allowed to share in the background: " + allowed.join(", ") + ".");
+    auto* resetAllowed = new QPushButton("Stop allowing them");
+    resetAllowed->setEnabled(!allowed.isEmpty());
+    connect(resetAllowed, &QPushButton::clicked, this, [this, allowedLbl, resetAllowed] {
+        QSettings().remove("allowed_sharers");
+        applySaved(recorder_);
+        allowedLbl->setText("No programs are allowed to share in the background.");
+        resetAllowed->setEnabled(false);
+    });
+    share->body()->addWidget(note("You are warned when a program talks to 8 or more different computers within 10 minutes, the "
+                                  "way torrent clients do. Allowing a program from the warning silences it."));
+    share->body()->addWidget(allowedLbl);
+    auto* keepTray = new QCheckBox("Never let applications hide their tray icons");
+    keepTray->setChecked(st.value("keep_tray_visible", true).toBool());
+    keepTray->setToolTip("When an application adds an icon to the system tray, it is set to always show, and the Log notes it.");
+    connect(keepTray, &QCheckBox::toggled, this, [](bool on) { QSettings().setValue("keep_tray_visible", on); });
+    share->body()->addWidget(keepTray);
+    share->body()->addWidget(resetAllowed, 0, Qt::AlignLeft);
+    left->addWidget(share);
+
     auto* data = new Card("server", "Where the history lives");
     QString db = QString::fromStdString(as::default_db_path());
     dbInfo_ = note(QString("History database: %1 (%2)\nConky feed: %3/conky.txt, rewritten every sample, kept in memory.")
@@ -265,7 +290,7 @@ void SettingsPage::setLoginStart(bool on) {
                             "Restart=on-failure\n"
                             "RestartSec=5\n"
                             "Nice=10\n"
-                            "MemoryMax=300M\n\n"
+                            "MemoryHigh=300M\n\n"
                             "[Install]\n"
                             "WantedBy=graphical-session.target\n")
                         .arg(QCoreApplication::applicationFilePath())

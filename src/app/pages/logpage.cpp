@@ -27,7 +27,7 @@ const Category kCats[] = {
     {"devices", "Devices", "cable"},          {"storage", "Drives", "hard-drive"},       {"flashing", "Flashing", "zap"},
     {"software", "Software", "package"},       {"admin", "Administrator", "cog"},         {"session", "Power and sessions", "power"},
     {"network", "Network", "globe"},           {"services", "Services", "server"},        {"problems", "Problems", "info"},
-    {"programs", "New programs", "list-tree"}, {"resources", "Resource events", "gauge"},
+    {"programs", "New programs", "list-tree"}, {"startup", "Startup changes", "rocket"}, {"resources", "Resource events", "gauge"},
 };
 
 const Category* category(const std::string& id) {
@@ -46,6 +46,7 @@ QColor categoryColor(const std::string& id) {
     if (id == "resources") return P.cpu;
     if (id == "software") return P.memory;
     if (id == "devices") return P.fan;
+    if (id == "startup") return P.thermal;
     return P.dim;
 }
 

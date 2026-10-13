@@ -15,6 +15,8 @@ class HistoryPage;
 class SettingsPage;
 class SystemInfoPage;
 class LogPage;
+class WeirdPage;
+class UpdatesPage;
 class StartupPage;
 class UsersPage;
 class ServicesPage;
@@ -23,6 +25,7 @@ class InstalledPage;
 class DiskSpacePage;
 class PowerPage;
 class Popout;
+class TrayWatch;
 class Notifier;
 
 class MainWindow : public QMainWindow {
@@ -63,6 +66,8 @@ private:
     SettingsPage* settings_ = nullptr;
     SystemInfoPage* sysinfo_ = nullptr;
     LogPage* log_ = nullptr;
+    WeirdPage* weird_ = nullptr;
+    UpdatesPage* updates_ = nullptr;
     StartupPage* startup_ = nullptr;
     UsersPage* users_ = nullptr;
     ServicesPage* services_ = nullptr;
@@ -71,6 +76,7 @@ private:
     DiskSpacePage* disk_ = nullptr;
     PowerPage* power_ = nullptr;
     Popout* popout_ = nullptr;
+    TrayWatch* trayWatch_ = nullptr;
     int page_ = 0;
     bool trayAlert_ = false;
     bool trayHot_ = false;

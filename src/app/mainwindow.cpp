@@ -11,18 +11,23 @@
 #include <QPushButton>
 #include <QSettings>
 #include <QStackedWidget>
+#include <QThread>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include "format.h"
 #include "icons.h"
 #include "live.h"
 #include "notifier.h"
+#include "traywatch.h"
 #include "pages/historypage.h"
 #include "pages/performancepage.h"
 #include "pages/processespage.h"
 #include "pages/settingspage.h"
 #include "pages/summarypage.h"
 #include "pages/logpage.h"
+#include "pages/weirdpage.h"
+#include "pages/updatespage.h"
 #include "pages/connectionspage.h"
 #include "pages/diskspacepage.h"
 #include "pages/installedpage.h"
@@ -41,8 +46,9 @@ namespace {
 // pages, Settings last.
 const struct { const char* icon; const char* label; } kPages[] = {
     {"layout-dashboard", "Summary"}, {"activity", "Performance"}, {"list-tree", "Processes"}, {"server", "History"},
-    {"scroll-text", "Log"},          {"info", "System info"},         {"power", "Startup apps"},   {"users", "Users"},         {"cog", "Services"},
-    {"cable", "Connections"},        {"package", "Installed apps"}, {"chart-pie", "Disk space"}, {"gauge", "Power & clocks"},
+    {"scroll-text", "Log"},          {"search", "Weird processes"},   {"info", "System info"},         {"power", "Startup apps"},   {"users", "Users"},         {"cog", "Services"},
+    {"cable", "Connections"},        {"package", "Installed apps"}, {"download", "Updates"},     {"chart-pie", "Disk space"},
+    {"gauge", "Power & clocks"},
     {"settings", "Settings"},
 };
 
@@ -82,6 +88,32 @@ MainWindow::MainWindow(Recorder* recorder) : recorder_(recorder) {
 
     notifier_ = new Notifier(this);
     connect(notifier_, &Notifier::openRequested, this, &MainWindow::showFromTray);
+    connect(recorder_, &Recorder::sharing, notifier_, &Notifier::sharing);
+    // The tray watcher waits on other programs over the bus, so it gets its
+    // own thread and can never stall the window.
+    auto* trayThread = new QThread(this);
+    trayThread->setObjectName("traywatch");
+    trayWatch_ = new TrayWatch;
+    trayWatch_->moveToThread(trayThread);
+    connect(trayThread, &QThread::started, trayWatch_, &TrayWatch::start);
+    connect(trayThread, &QThread::finished, trayWatch_, &QObject::deleteLater);
+    connect(qApp, &QCoreApplication::aboutToQuit, trayThread, [trayThread] {
+        trayThread->quit();
+        // The watcher may legitimately be inside a 5 s D-Bus call. If it is
+        // stuck longer, detach the thread rather than abort on the way out.
+        if (!trayThread->wait(8000)) trayThread->setParent(nullptr);
+    });
+    connect(trayWatch_, &TrayWatch::logLine, this, [this](const QString& c, const QString& t, const QString& d) {
+        QMetaObject::invokeMethod(recorder_, [r = recorder_, c, t, d] { r->addLog(c, t, d); }, Qt::QueuedConnection);
+    });
+    trayThread->start(QThread::LowPriority);
+    connect(notifier_, &Notifier::allowSharer, this, [this](const QString& program) {
+        QSettings st;
+        QStringList allowed = st.value("allowed_sharers").toStringList();
+        if (!allowed.contains(program)) allowed << program;
+        st.setValue("allowed_sharers", allowed);
+        SettingsPage::applySaved(recorder_);
+    });
     connect(recorder_, &Recorder::sampled, this, &MainWindow::onSample);
     connect(recorder_, &Recorder::logged, this, [this](int) {
         if (log_ && page_ == 4 && isVisible()) log_->reload();
@@ -133,7 +165,7 @@ void MainWindow::build() {
                              .arg(P.panelHi.name(QColor::HexArgb), P.selection.name(QColor::HexArgb)));
         nav_->addButton(b, i);
         sv->addWidget(b);
-        if (i == 4 || i == 12) {
+        if (i == 5 || i == 14) {
             auto* sep = new QFrame;
             sep->setFixedHeight(1);
             sep->setStyleSheet(QString("background:%1; margin: 0 10px;").arg(P.border.name(QColor::HexArgb)));
@@ -183,19 +215,25 @@ void MainWindow::build() {
     history_ = new HistoryPage;
     settings_ = new SettingsPage(recorder_);
     log_ = new LogPage;
+    weird_ = new WeirdPage;
     sysinfo_ = new SystemInfoPage;
     startup_ = new StartupPage;
     users_ = new UsersPage;
     services_ = new ServicesPage;
     connections_ = new ConnectionsPage;
     installed_ = new InstalledPage;
+    updates_ = new UpdatesPage;
     disk_ = new DiskSpacePage;
     power_ = new PowerPage;
-    for (QWidget* w : std::initializer_list<QWidget*>{summary_, performance_, processes_, history_, log_, sysinfo_, startup_, users_, services_,
-                                                      connections_, installed_, disk_, power_, settings_})
+    for (QWidget* w : std::initializer_list<QWidget*>{summary_, performance_, processes_, history_, log_, weird_, sysinfo_, startup_, users_, services_,
+                                                      connections_, installed_, updates_, disk_, power_, settings_})
         stack_->addWidget(w);
     connect(summary_, &SummaryPage::openHistory, this, [this] { openPage(3); });
     connect(history_, &HistoryPage::showProcess, this, [this](int pid) {
+        openPage(2);
+        processes_->selectPid(pid);
+    });
+    connect(weird_, &WeirdPage::showProcess, this, [this](int pid) {
         openPage(2);
         processes_->selectPid(pid);
     });
@@ -311,14 +349,16 @@ void MainWindow::refreshVisible() {
     case 2: processes_->refresh(); break;
     case 3: history_->refresh(); break;
     case 4: log_->refresh(); break;
-    case 5: sysinfo_->refresh(); break;
-    case 6: startup_->refresh(); break;
-    case 7: users_->refresh(); break;
-    case 8: services_->refresh(); break;
-    case 9: connections_->refresh(); break;
-    case 10: installed_->refresh(); break;
-    case 11: disk_->refresh(); break;
-    case 12: power_->refresh(); break;
+    case 5: weird_->refresh(); break;
+    case 6: sysinfo_->refresh(); break;
+    case 7: startup_->refresh(); break;
+    case 8: users_->refresh(); break;
+    case 9: services_->refresh(); break;
+    case 10: connections_->refresh(); break;
+    case 11: installed_->refresh(); break;
+    case 12: updates_->refresh(); break;
+    case 13: disk_->refresh(); break;
+    case 14: power_->refresh(); break;
     default: break;
     }
 }

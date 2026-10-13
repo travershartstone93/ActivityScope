@@ -9,6 +9,8 @@
 
 #include "format.h"
 #include "live.h"
+#include "actions.h"
+#include <csignal>
 
 namespace {
 
@@ -124,9 +126,33 @@ void Notifier::onSample(const as::SnapshotPtr& sp) {
     }
 }
 
+void Notifier::sharing(const QString& program, int pid, quint64 startTicks, int peers, double uploadBps) {
+    QString body = QString("%1 has been talking to %2 different computers in the last 10 minutes").arg(program).arg(peers);
+    if (uploadBps > 20e3) body += QString(", while this machine uploaded about %1").arg(rate(uploadBps));
+    body += ". This is how file-sharing programs such as torrent clients behave.";
+    QStringList actions;
+    if (pid > 0) actions << "quit" << "Quit " + program;
+    actions << "allow" << "Allow " + program << "open" << "Open ActivityScope";
+    uint id = notify(program + " is sharing in the background", body, actions, false);
+    targets_[id] = {as::ProcessKey{pid, startTicks}, program};
+}
+
 void Notifier::onAction(uint id, const QString& action) {
     if (action == "open") {
         emit openRequested();
+        return;
+    }
+    if (action == "allow") {
+        if (auto it = targets_.find(id); it != targets_.end()) emit allowSharer(it->name);
+        return;
+    }
+    if (action == "quit") {
+        auto it = targets_.find(id);
+        if (it == targets_.end()) return;
+        // A normal quit request, so the program can save its state.
+        std::string err = as::signal_process(it->key, SIGTERM);
+        notify(err.empty() ? "Asked " + it->name + " to quit" : "Could not quit " + it->name,
+               err.empty() ? it->name + " has been asked to close and stop sharing." : QString::fromStdString(err), {}, false);
         return;
     }
     auto it = targets_.find(id);

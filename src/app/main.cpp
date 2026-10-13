@@ -71,6 +71,11 @@ int main(int argc, char** argv) {
         window.openPage(qEnvironmentVariableIntValue("AS_PAGE"));
         int delay = qEnvironmentVariableIsSet("AS_DELAY") ? qEnvironmentVariableIntValue("AS_DELAY") : 8;
         if (qEnvironmentVariableIsSet("AS_POPOUT")) window.togglePopout();
+        const QString press = qEnvironmentVariable("AS_PRESS");
+        if (press == "check" || press == "weird")
+            for (QObject* o : window.findChildren<QObject*>())
+                if (QString(o->metaObject()->className()) == (press == "check" ? "UpdatesPage" : "WeirdPage"))
+                    QMetaObject::invokeMethod(o, press == "check" ? "check" : "scan", Qt::QueuedConnection);
         QTimer::singleShot(delay * 1000, &window, [&window] {
             window.grab().save(qEnvironmentVariable("AS_SHOT"));
             if (qEnvironmentVariableIsSet("AS_POPOUT"))

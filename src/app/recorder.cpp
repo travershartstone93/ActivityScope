@@ -12,7 +12,10 @@
 #include "guard.h"
 
 Recorder::~Recorder() {
-    if (store_) store_->flush();
+    if (!store_) return;
+    store_->add_procs(pendingProcs_);  // up to 10 s of buffered records
+    pendingProcs_.clear();
+    store_->flush();
 }
 
 void Recorder::start() {
@@ -22,6 +25,7 @@ void Recorder::start() {
     feed_dir_ = as::runtime_dir();
     checkPastBoots();
     logwatch_ = std::make_unique<as::LogWatch>(store_.get());
+    startup_ = std::make_unique<as::StartupWatch>();
     timer_ = new QTimer(this);
     timer_->setTimerType(Qt::PreciseTimer);
     connect(timer_, &QTimer::timeout, this, &Recorder::tick);
@@ -42,18 +46,53 @@ void Recorder::tick() {
     }
     if (auto m = engine_.take_minute()) store_->add_minute(*m);
     as::write_conky_feed(*s, feed_dir_);
+    try {
     if (logwatch_) {
         auto entries = logwatch_->poll(*s);
+        auto changes = startup_->poll(s->wall);
+        entries.insert(entries.end(), changes.begin(), changes.end());
+        auto started = proclog_.feed(*s);
+        pendingProcs_.insert(pendingProcs_.end(), started.begin(), started.end());
+        auto conns = netlog_.feed(*s);
+        if (!conns.empty()) {
+            double up = 0;
+            for (const auto& n : s->nets)
+                if (n.kind != "Loopback" && n.kind != "Virtual") up += n.tx_bps;
+            peers_.allowed = [this](const std::string& p) { return allowedSharers_.count(p) > 0; };
+            for (const auto& a : peers_.feed(conns, up, s->wall)) {
+                uint64_t ticks = 0;
+                for (const auto& p : s->procs)
+                    if (p.key.pid == a.pid) ticks = p.key.start_ticks;
+                entries.push_back({s->wall, "network",
+                                   a.program + " is sharing with " + std::to_string(a.peers) + " different computers in the background",
+                                   "Program: " + a.exe + "\nPID: " + std::to_string(a.pid) + "\nThe machine was uploading about " +
+                                       as::human_bytes(a.upload_bps) + "/s at the time."});
+                emit sharing(QString::fromStdString(a.program), a.pid, ticks, a.peers, a.upload_bps);
+            }
+        }
+        for (const auto& c : store_->add_connections(conns)) {
+            // A first connection is worth a log line when the program is not
+            // part of the system (downloads, builds, scripts).
+            if (c.exe.empty() || c.exe.rfind("/usr/", 0) == 0 || c.exe.rfind("/opt/", 0) == 0) continue;
+            entries.push_back({c.first_seen, "network", c.program + " connected to " + c.remote + ":" + std::to_string(c.port) + " for the first time",
+                               "Program: " + c.exe + "\nProtocol: " + c.proto + "\nPID: " + std::to_string(c.pid)});
+        }
         if (!entries.empty()) {
             store_->add_log(entries);
             emit logged(int(entries.size()));
         }
+    }
+    } catch (const std::exception& e) {
+        // A watcher must never take the recorder down; say so instead.
+        const_cast<as::Snapshot&>(*s).problems.push_back(std::string("Log watchers: ") + e.what());
     }
 
     // Near the shutdown point every second is written at once, so a sudden
     // power-off still leaves a record of its last moments.
     bool hot = s->guard.margin.ok() && s->guard.margin.get() <= 10;
     if (hot || s->mono - last_flush_ >= 10) {
+        store_->add_procs(pendingProcs_);
+        pendingProcs_.clear();
         store_->flush();
         last_flush_ = s->mono;
     }

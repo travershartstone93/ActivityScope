@@ -22,19 +22,19 @@ Palette dark() {
     p.dim = QColor("#9097a3");
     p.faint = QColor("#5b616c");
     p.grid = QColor(255, 255, 255, 18);
-    p.cpu = QColor("#4ade80");
-    p.kernel = QColor("#f05252");
-    p.clock = QColor("#f05252");
-    p.temp = QColor("#fbbf24");
-    p.memory = QColor("#c084fc");
-    p.gpu = QColor("#60a5fa");
-    p.disk = QColor("#34d399");
-    p.network = QColor("#3b82f6");
-    p.energy = QColor("#facc15");
-    p.thermal = QColor("#fb923c");
-    p.fan = QColor("#22d3ee");
-    p.alert = QColor("#f43f5e");
-    p.good = QColor("#22c55e");
+    p.cpu = QColor("#2bf24f");
+    p.kernel = QColor("#ff2e2e");
+    p.clock = QColor("#ff2e2e");
+    p.temp = QColor("#ffc400");
+    p.memory = QColor("#b24dff");
+    p.gpu = QColor("#3d7dff");
+    p.disk = QColor("#00e6a0");
+    p.network = QColor("#3a72ff");
+    p.energy = QColor("#ffdd00");
+    p.thermal = QColor("#ff7300");
+    p.fan = QColor("#00d5ff");
+    p.alert = QColor("#ff1f4b");
+    p.good = QColor("#1fe35a");
     return p;
 }
 
@@ -60,6 +60,10 @@ Palette light() {
     p.temp = QColor("#d97706");
     p.thermal = QColor("#ea580c");
     p.fan = QColor("#0891b2");
+    p.kernel = QColor("#f05252");
+    p.clock = QColor("#f05252");
+    p.alert = QColor("#f43f5e");
+    p.good = QColor("#22c55e");
     return p;
 }
 

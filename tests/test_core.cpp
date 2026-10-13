@@ -5,10 +5,14 @@
 #include <csignal>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
+#include <map>
+#include <set>
 #include <functional>
 #include <string>
 #include <vector>
@@ -16,6 +20,13 @@
 #include "actions.h"
 #include "dirscan.h"
 #include "logbook.h"
+#include "netlog.h"
+#include "peerwatch.h"
+#include "persist.h"
+#include "processlog.h"
+#include "updates.h"
+#include "upgradecheck.h"
+#include <sqlite3.h>
 #include "events.h"
 #include "guard.h"
 #include "providers.h"
@@ -251,6 +262,19 @@ void test_events() {
         CHECK(closed[0].summary.find("renderer") != std::string::npos);
         CHECK(closed[0].end - closed[0].start >= 18);  // both bursts are in one event
     }
+}
+
+void test_blips_dropped() {
+    std::puts("short blips dropped");
+    as::EventEngine e;
+    double t = 0;
+    for (int i = 0; i < 3; ++i) e.feed(snap(t++, 5));
+    // Two seconds of 60% CPU with nobody standing out, then calm.
+    std::vector<as::Event> closed;
+    for (int i = 0; i < 2; ++i) e.feed(snap(t++, 60, {proc(9, "a", 4), proc(10, "b", 4)}));
+    for (int i = 0; i < 45 && closed.empty(); ++i) closed = e.feed(snap(t++, 5));
+    CHECK(closed.empty());
+    CHECK(!e.has_open());
 }
 
 void test_short_lived_group() {
@@ -592,6 +616,278 @@ void test_logbook() {
     CHECK(later.size() == 1 && later[0].title.find("zsh crashed 8 times between") == 0);
 }
 
+void test_history_records() {
+    std::puts("program and connection history");
+    as::ProcessLog pl;
+    auto s1 = std::make_shared<as::Snapshot>();
+    s1->wall = 5000;
+    as::ProcessInfo shell = proc(10, "fish", 0, 1);
+    as::ProcessInfo tool = proc(20, "esptool", 30, 10, 4990);
+    tool.cmdline = "esptool --port /dev/ttyACM0 write_flash 0x0 fw.bin";
+    tool.cpu_seconds = 3;
+    tool.rss = 40e6;
+    s1->procs = {shell, tool};
+    auto r1 = pl.feed(*s1);
+    CHECK(r1.size() == 2);
+    as::ProcessInfo* t1 = nullptr;
+    for (auto& p : s1->procs) if (p.name == "esptool") t1 = &p;
+    CHECK(t1 && r1[1].parent == "fish");
+    auto s2 = std::make_shared<as::Snapshot>();
+    s2->wall = 5010;
+    s2->procs = {shell};
+    tool.cpu_seconds = 8;
+    s2->exited = {tool};
+    auto r2 = pl.feed(*s2);
+    // The exited entry carries the final totals (8), ahead of the last scan (3).
+    CHECK(r2.size() == 1 && r2[0].name == "esptool" && near(r2[0].ended, 5010) && near(r2[0].cpu_seconds, 8));
+
+    int port = 0;
+    CHECK(as::format_address("0100007F:0035", false, &port) == "127.0.0.1" && port == 53);
+    CHECK(as::format_address("0000000000000000FFFF00000100A8C0:01BB", true, &port) == "192.168.0.1" && port == 443);
+    auto socks = as::parse_proc_net("  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+                                    "   0: 0100A8C0:D2F0 22B2C268:01BB 01 00000000:00000000 00:00000000 00000000  1000        0 123456 1\n", "tcp");
+    CHECK(socks.size() == 1 && socks[0].remote == "104.194.178.34" && socks[0].remote_port == 443 && socks[0].state == 1 &&
+          socks[0].inode == 123456 && socks[0].uid == 1000 && socks[0].local == "192.168.0.1" && socks[0].local_port == 54000);
+
+    // Malformed or cut /proc/net lines are skipped, never thrown on.
+    for (const char* bad : {"   0: 0100A8C0 22B2C268:01BB 01 0:0 00:0 0  1000 0 1 1\n",            // no port separator
+                            "   0: 0100A8C0:D2F0 22B2C2:01BB 01 0:0 00:0 0  1000 0 1 1\n",         // address cut short
+                            "   0: 0100A8C0:D2F0 22B2C268:01BB zz 0:0 00:0 0  1000 0 1 1\n",       // state not hex
+                            "   0: 0100A8C0:D2F0 FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF:01BB 01 0:0 00:0 0 1000 0 1 1\n"})
+        CHECK(as::parse_proc_net(std::string("header\n") + bad, "tcp").empty());
+    CHECK(as::format_address("0100A8C0:FFFFF", false, nullptr).empty());  // port out of range
+
+    CHECK(as::line_diff("a\nb\n", "a\nc\n") == "+ c\n- b\n");
+
+    Tree t;
+    t.write("home/.config/autostart/keep.desktop", "[Desktop Entry]\nExec=old\n");
+    t.write("etc/hosts", "127.0.0.1 localhost\n");
+    as::StartupWatch w(t.root + "/home", t.root + "/etc");
+    CHECK(w.watching() >= 2);
+    t.write("home/.config/autostart/new.desktop", "[Desktop Entry]\nExec=/tmp/evil\n");
+    t.write("etc/hosts", "127.0.0.1 localhost\n1.2.3.4 bank.example\n");
+    w.poll(100);
+    auto entries = w.poll(103);  // reported after 2 quiet seconds
+    bool sawNew = false, sawHosts = false;
+    for (const auto& e : entries) {
+        if (e.title.find("Autostart entry added") == 0 && e.detail.find("+ Exec=/tmp/evil") != std::string::npos) sawNew = true;
+        if (e.title.find("System file changed") == 0 && e.detail.find("+ 1.2.3.4 bank.example") != std::string::npos) sawHosts = true;
+    }
+    CHECK(sawNew);
+    CHECK(sawHosts);
+
+    std::string dbp = t.root + "/h.db";
+    {
+        as::Store st(dbp);
+        as::ProcessRecord pr = r1[1];
+        st.add_procs({pr});
+        pr.ended = 5010;
+        pr.cpu_seconds = 8;
+        st.add_procs({pr});  // the same process ending updates its row
+        as::ConnectionRecord c{"mytool", "/home/me/mytool", "1.2.3.4", "TCP", 443, 77, 5000, 5000, true};
+        CHECK(st.add_connections({c}).size() == 1);
+        c.last_seen = 5015;
+        CHECK(st.add_connections({c}).empty());  // known pair: not new again
+        st.add_log({{5005, "devices", "Plugged in: ESP32 board", ""}});
+    }
+    sqlite3* db = nullptr;
+    sqlite3_open(dbp.c_str(), &db);
+    sqlite3_stmt* q = nullptr;
+    sqlite3_prepare_v2(db, "SELECT kind FROM v_timeline WHERE t BETWEEN 4980 AND 5020 ORDER BY t", -1, &q, nullptr);
+    std::vector<std::string> kinds;
+    while (sqlite3_step(q) == SQLITE_ROW) kinds.emplace_back(reinterpret_cast<const char*>(sqlite3_column_text(q, 0)));
+    sqlite3_finalize(q);
+    sqlite3_prepare_v2(db, "SELECT COUNT(*), MAX(ended) FROM procs", -1, &q, nullptr);
+    sqlite3_step(q);
+    CHECK(sqlite3_column_int(q, 0) == 1 && near(sqlite3_column_double(q, 1), 5010));
+    sqlite3_finalize(q);
+    sqlite3_close(db);
+    CHECK((kinds == std::vector<std::string>{"program started", "first connection", "log: devices", "program ended"}));
+}
+
+void test_peerwatch() {
+    std::puts("background sharing");
+    as::PeerWatch w;
+    std::set<std::string> allow = {"syncthing"};
+    w.allowed = [&](const std::string& p) { return allow.count(p) > 0; };
+    auto conns = [](const std::string& prog, int n, int base) {
+        std::vector<as::ConnectionRecord> v;
+        for (int i = 0; i < n; ++i) v.push_back({prog, "/usr/bin/" + prog, "10.0." + std::to_string(base) + "." + std::to_string(i), "TCP", 6881, 42, 0, 0, false});
+        return v;
+    };
+    // A browser with three servers never alerts.
+    CHECK(w.feed(conns("firefox", 3, 1), 0, 100).empty());
+    // A torrent client collecting peers over a few rounds alerts once.
+    CHECK(w.feed(conns("ktorrent", 5, 2), 300e3, 115).empty());
+    auto a = w.feed(conns("ktorrent", 9, 3), 300e3, 130);
+    CHECK(a.size() == 1 && a[0].program == "ktorrent" && a[0].peers >= 8 && a[0].pid == 42);
+    CHECK(w.feed(conns("ktorrent", 12, 4), 300e3, 145).empty());  // not again the same day
+    // An allowed sharer stays quiet.
+    CHECK(w.feed(conns("syncthing", 20, 5), 0, 160).empty());
+    // Peers older than the window are forgotten.
+    CHECK(w.feed(conns("transmission", 6, 6), 0, 200).empty());
+    CHECK(w.feed(conns("transmission", 4, 7), 0, 900).empty());  // the first 6 expired: only 4 now
+}
+
+void test_updates() {
+    std::puts("updates");
+    auto list = as::parse_update_list("linux-cachyos 7.2.2-1 -> 7.2.3-1\nmesa 1:26.1.0-1 -> 1:26.1.1-1\n\nnoise line\n", false);
+    CHECK(list.size() == 2 && list[0].name == "linux-cachyos" && list[0].installed == "7.2.2-1" && list[0].available == "7.2.3-1");
+    auto aur = as::parse_update_list("msi-ec-dkms-git 1-1 -> 2-1\n", true);
+    CHECK(aur.size() == 1 && aur[0].aur);
+    // The real pacman.conf here: cuda held in [options]; commented lines and other sections ignored.
+    std::string conf = "[options]\nIgnorePkg = cuda\n#IgnorePkg   =\nIgnorePkg = cudnn nccl\n[core]\nIgnorePkg = notreally\n";
+    auto held = as::pacman_ignored(conf);
+    CHECK((held == std::set<std::string>{"cuda", "cudnn", "nccl"}));
+    CHECK(as::needs_restart("linux-cachyos") && as::needs_restart("nvidia-utils") && as::needs_restart("linux-cachyos-nvidia-open"));
+    CHECK(!as::needs_restart("linux-cachyos-headers") && !as::needs_restart("firefox"));
+    CHECK(as::update_all_command({"cuda"}, true) == "sudo pacman -Syu --ignore cuda && paru -Sua --ignore cuda");
+    CHECK(as::update_all_command({}, false) == "sudo pacman -Syu");
+    CHECK(as::update_one_command(list[1]) == "sudo pacman -S --needed mesa");
+    CHECK(as::update_one_command(aur[0]) == "paru -S msi-ec-dkms-git");
+}
+
+void test_upgradecheck() {
+    CHECK(as::vercmp("4.2.1-1.1", "4.1.4-1") > 0);
+    CHECK(as::vercmp("1.0-1", "1.0-2") < 0);
+    CHECK(as::vercmp("1:1.0-1", "2.0-1") > 0);
+    CHECK(as::vercmp("1.0a-1", "1.0-1") < 0);
+    CHECK(as::vercmp("1.10-1", "1.9-1") > 0);
+    CHECK(as::vercmp("2.78-1", "2.78-1") == 0);
+    CHECK(as::satisfies("4.1.4-1", as::parse_dep("audit=4.1.4")));
+    CHECK(!as::satisfies("4.2.1-1.1", as::parse_dep("audit=4.1.4")));
+    CHECK(as::satisfies("14.2-1", as::parse_dep("gcc<15")));
+    CHECK(!as::satisfies("15.1-1", as::parse_dep("gcc<15")));
+    CHECK(as::soname_of_provide("libicuuc.so=76-64") == "libicuuc.so.76");
+    CHECK(as::soname_of_provide("sh").empty());
+    CHECK(as::parse_size("12.50 MiB") == 12.5 * 1024 * 1024);
+
+    const std::string refused =
+        "error: failed to prepare transaction (could not satisfy dependencies)\n"
+        ":: installing audit (4.2.1-1.1) breaks dependency 'audit=4.1.4' required by lib32-audit\n";
+    auto r = as::parse_refusals(refused);
+    CHECK(r.size() == 1 && r[0].kind == as::Refusal::BreaksDep);
+    CHECK(r[0].package == "audit" && r[0].version == "4.2.1-1.1" && r[0].dep == "audit=4.1.4" && r[0].by == "lib32-audit");
+    auto c = as::parse_refusals(":: foo and bar are in conflict\nerror: target not found: baz\n");
+    CHECK(c.size() == 2 && c[0].kind == as::Refusal::Conflict && c[1].kind == as::Refusal::NotFound && c[1].package == "baz");
+
+    auto info = as::parse_pacman_info(
+        "Name            : lib32-audit\nVersion         : 4.1.4-1\nDescription     : Userspace components of the audit\n"
+        "                  framework\nRequired By     : lib32-pam\nPackager        : Someone <x@archlinux.org>\n\n"
+        "Name            : lib32-audit\nVersion         : 9-9\n\n");
+    CHECK(info.size() == 1 && info["lib32-audit"]["Version"] == "4.1.4-1");
+    CHECK(info["lib32-audit"]["Description"] == "Userspace components of the audit framework");
+    CHECK(as::info_list(info["lib32-audit"], "Required By") == std::vector<std::string>{"lib32-pam"});
+
+    // The real case on this machine: lib32-libcap -> lib32-pam -> lib32-audit pin audit 4.1.4,
+    // and all three were dropped from multilib. A fake pacman replays it.
+    namespace fs = std::filesystem;
+    std::string root = fs::temp_directory_path() / ("as-upg-" + std::to_string(getpid()));
+    fs::create_directories(root + "/local/lib32-audit-4.1.4-1");
+    fs::create_directories(root + "/local/lib32-pam-1.7.2-1");
+    fs::create_directories(root + "/local/lib32-libcap-2.78-1");
+    fs::create_directories(root + "/local/audit-4.1.4-1");
+    fs::create_directories(root + "/sync");
+    std::map<std::string, std::string> qi = {
+        {"lib32-audit", "Name : lib32-audit\nVersion : 4.1.4-1\nDescription : audit 32-bit\nRequired By : lib32-pam\nInstall Reason : Installed as a dependency for another package\nPackager : A <a@archlinux.org>\n\n"},
+        {"lib32-pam", "Name : lib32-pam\nVersion : 1.7.2-1\nDescription : pam 32-bit\nRequired By : lib32-libcap\nInstall Reason : Installed as a dependency for another package\nPackager : A <a@archlinux.org>\n\n"},
+        {"lib32-libcap", "Name : lib32-libcap\nVersion : 2.78-1\nDescription : libcap 32-bit\nRequired By : None\nInstall Reason : Installed as a dependency for another package\nPackager : A <a@archlinux.org>\n\n"},
+        {"audit", "Name : audit\nVersion : 4.1.4-1\nProvides : libaudit.so=1-64\n\n"},
+    };
+    int dry_runs = 0;
+    as::Runner fake = [&](const std::vector<std::string>& a) -> as::CmdResult {
+        std::string db;
+        for (std::size_t i = 0; i + 1 < a.size(); ++i)
+            if (a[i] == "--dbpath") db = a[i + 1];
+        if (a[1] == "-Sup") {
+            ++dry_runs;
+            if (fs::exists(db + "/local/lib32-audit-4.1.4-1")) return {1, refused};
+            // The warning line is stderr merged into the output; it must not count.
+            return {0, "warning: cuda: ignoring package upgrade (12.1 -> 13.0)\naudit 4.2.1-1.1\n"};
+        }
+        if (a[1] == "-Qi") {
+            std::string out;
+            for (std::size_t i = 4; i < a.size(); ++i)
+                if (qi.count(a[i])) out += qi[a[i]];
+            return {0, out};
+        }
+        if (a[1] == "-Si") {
+            std::string out;
+            for (std::size_t i = 4; i < a.size(); ++i)
+                if (a[i] == "audit") out += "Name : audit\nVersion : 4.2.1-1.1\nProvides : libaudit.so=1-64\nDownload Size : 1.00 MiB\nInstalled Size : 3.00 MiB\n\n";
+            return {0, out};
+        }
+        if (a[1] == "-Rsp") return {0, "lib32-libcap\nlib32-pam\nlib32-libnsl\nlib32-libtirpc\nlib32-audit\n"};
+        return {0, ""};
+    };
+    as::CheckInput in;
+    in.sync_db = root + "/sync";
+    in.local_db = root + "/local";
+    in.scratch = root + "/scratch";
+    in.held = {"cuda"};
+    in.updates = {{"audit", "4.1.4-1", "4.2.1-1.1"}};
+    in.home = root;
+    in.cache_dir = root;
+    std::vector<int> steps;
+    in.progress = [&](int pct, const std::string&) { steps.push_back(pct); };
+    auto res = as::check_upgrade(in, fake);
+    in.progress = nullptr;
+    CHECK(steps.size() > 3 && steps.back() == 100 && std::is_sorted(steps.begin(), steps.end()));
+    CHECK(res.installs_cleanly && res.needed_fixes && res.planned == 1 && dry_runs == 2);
+    CHECK(res.issues.size() == 1);
+    if (!res.issues.empty()) {
+        const auto& is = res.issues[0];
+        CHECK(is.severity == "fail" && is.tested);
+        CHECK(is.fixes.size() == 1 && is.fixes[0].kind == "remove");
+        CHECK(is.fixes[0].targets == std::vector<std::string>{"lib32-libcap"});
+        CHECK(is.fixes[0].command == "sudo pacman -Rns lib32-libcap");
+        CHECK(is.fixes[0].removes.size() == 5 && is.fixes[0].label == "Remove broken packages");
+        CHECK(is.title.find("no longer in the repositories") != std::string::npos);
+        CHECK(is.explanation.find("32-bit") != std::string::npos);
+    }
+    CHECK(fs::exists(root + "/local/lib32-audit-4.1.4-1"));  // the real db is never touched
+
+    // A broken copy of the database must stop the check, not fake a clean result.
+    as::CheckInput bad = in;
+    bad.local_db = root + "/no-such-dir";
+    auto br = as::check_upgrade(bad, fake);
+    CHECK(!br.installs_cleanly && br.issues.size() == 1 && br.issues[0].kind == "internal");
+
+    auto needed = as::elf_needed("/usr/bin/ls");
+    CHECK(std::find(needed.begin(), needed.end(), "libc.so.6") != needed.end());
+    // An AUR program loading a library the upgrade takes away gets a rebuild warning.
+    as::Runner lib = [&](const std::vector<std::string>& a) -> as::CmdResult {
+        if (a[1] == "-Sup") return {0, "glibc 3.0-1\n"};
+        if (a[1] == "-Qi" && a.back() == "glibc") return {0, "Name : glibc\nVersion : 2.42-1\nProvides : libc.so=6-64\n\n"};
+        if (a[1] == "-Si" && a.back() == "glibc") return {0, "Name : glibc\nVersion : 3.0-1\nProvides : libc.so=7-64\n\n"};
+        if (a[1] == "-Qmq") return {0, "fancy-ls-git\n"};
+        if (a[1] == "-Qlq" && a.back() == "fancy-ls-git") return {0, "/usr/\n/usr/bin/\n/usr/bin/ls\n"};
+        return {0, ""};
+    };
+    in.updates = {{"glibc", "2.42-1", "3.0-1"}};
+    in.root = "/";
+    auto lr = as::check_upgrade(in, lib);
+    CHECK(lr.issues.size() == 1 && lr.issues[0].kind == "aur-library");
+    if (!lr.issues.empty()) CHECK(lr.issues[0].fixes.size() == 1 && lr.issues[0].fixes[0].command == "paru -S fancy-ls-git");
+    // A kernel update whose headers are not updated with it: DKMS drivers cannot rebuild.
+    as::Runner kern = [&](const std::vector<std::string>& a) -> as::CmdResult {
+        if (a[1] == "-Sup") return {0, "linux-cachyos 7.3-1\n"};
+        if (a[1] == "-Qq") return {0, "linux-cachyos\nlinux-cachyos-headers\nmsi-ec-dkms-git\n"};
+        std::string out;
+        for (std::size_t i = 4; i < a.size(); ++i) {
+            if (a[1] == "-Qi" && a[i] == "linux-cachyos") out += "Name : linux-cachyos\nVersion : 7.2-1\n\n";
+            if (a[1] == "-Qi" && a[i] == "linux-cachyos-headers") out += "Name : linux-cachyos-headers\nVersion : 7.2-1\n\n";
+            if (a[1] == "-Si" && a[i] == "linux-cachyos") out += "Name : linux-cachyos\nVersion : 7.3-1\n\n";
+        }
+        return {0, out};
+    };
+    in.updates = {{"linux-cachyos", "7.2-1", "7.3-1"}};
+    auto kr = as::check_upgrade(in, kern);
+    CHECK(kr.issues.size() == 1 && kr.issues[0].kind == "kernel" && kr.issues[0].severity == "warn");
+    if (!kr.issues.empty()) CHECK(kr.issues[0].fixes.size() == 1 && kr.issues[0].fixes[0].targets[0] == "linux-cachyos");
+    fs::remove_all(root);
+}
+
 }  // namespace
 
 int main() {
@@ -602,6 +898,7 @@ int main() {
     test_cgroups();
     test_events();
     test_short_lived_group();
+    test_blips_dropped();
     test_store();
     test_end_process();
     test_pause_resume();
@@ -611,6 +908,10 @@ int main() {
     test_event_margin_text();
     test_dirscan();
     test_logbook();
+    test_history_records();
+    test_peerwatch();
+    test_updates();
+    test_upgradecheck();
     std::printf("%d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;
 }
