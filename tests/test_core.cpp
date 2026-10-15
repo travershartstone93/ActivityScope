@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "actions.h"
+#include "askcore.h"
 #include "dirscan.h"
 #include "logbook.h"
 #include "netlog.h"
@@ -745,6 +746,61 @@ void test_peerwatch() {
     CHECK(w.feed(conns("transmission", 4, 7), 0, 900).empty());  // the first 6 expired: only 4 now
 }
 
+void test_askcore() {
+    std::puts("ask");
+    namespace fs = std::filesystem;
+    std::string dir = fs::temp_directory_path() / ("as-ask-" + std::to_string(getpid()));
+    fs::create_directories(dir);
+    std::string dbp = dir + "/h.db";
+    std::tm tmv{};
+    tmv.tm_year = 2026 - 1900; tmv.tm_mon = 9; tmv.tm_mday = 13; tmv.tm_hour = 21; tmv.tm_min = 30; tmv.tm_isdst = -1;
+    const double now = double(std::mktime(&tmv));  // a real local evening, so "tonight" holds the fixture
+    {
+        as::Store st(dbp);
+        as::Event e;
+        e.start = now - 2 * 3600;
+        e.end = now - 2 * 3600 + 300;
+        e.kinds = as::KindCpu | as::KindHeat;
+        e.peak_temp = 96;
+        e.peak_cpu = 61;
+        e.min_margin = 4;
+        e.summary = "CPU peaked at 61%, the CPU reached 96 C, mostly blender";
+        as::Culprit c;
+        c.name = "blender";
+        c.share = 0.74;
+        e.culprits.push_back(c);
+        st.add_event(e);
+        st.add_log({{now - 3600, "problems", "mixxx crashed", ""}});
+        as::ProcessRecord p{10, now - 9000, now - 8000, "blender", "", "", "", "", "", 1, 50, 0};
+        st.add_procs({p});
+        st.flush();
+    }
+    as::Ask ask;
+    CHECK(ask.open(dbp));
+    ask.load_language("vendor/unllm/data/synonyms.txt", "vendor/unllm/data/vectors.bin");
+
+    as::AskResult heat = ask.ask("why was it so hot tonight", int64_t(now));
+    CHECK(!heat.refused);
+    CHECK(heat.answer.find("The CPU reached 96 C") != std::string::npos);
+    CHECK(heat.answer.find("Blender was the main cause") != std::string::npos);
+    CHECK(heat.answer.find("shutdown point") != std::string::npos);
+    CHECK(!heat.receipts.empty());
+
+    as::AskResult crash = ask.ask("what crashed today", int64_t(now));
+    CHECK(crash.answer.find("One crash was recorded") != std::string::npos);
+    CHECK(crash.receipts.size() == 1 && crash.receipts[0].find("mixxx crashed") != std::string::npos);
+
+    as::AskResult none = ask.ask("did anything crash last week", int64_t(now));
+    CHECK(none.answer.find("No crashes were recorded") != std::string::npos && none.receipts.empty());
+
+    as::AskResult steak = ask.ask("how do i cook a steak", int64_t(now));
+    CHECK(steak.refused && steak.answer.find("I can't answer that") != std::string::npos);
+
+    as::AskResult story = ask.ask("what did blender do tonight", int64_t(now));
+    CHECK(!story.refused && !story.receipts.empty());
+    fs::remove_all(dir);
+}
+
 void test_notable() {
     std::puts("routine or notable");
     as::Event e;
@@ -973,6 +1029,7 @@ int main() {
     test_logbook();
     test_history_records();
     test_peerwatch();
+    test_askcore();
     test_notable();
     test_updates();
     test_upgradecheck();

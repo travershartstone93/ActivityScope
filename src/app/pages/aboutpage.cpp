@@ -103,6 +103,7 @@ AboutPage::AboutPage(QWidget* parent) : QWidget(parent) {
     featureRow(pb, "server", "History", "the timeline of events and their culprits, in plain sentences");
     featureRow(pb, "scroll-text", "Log", "the investigation log of everything worth remembering");
     featureRow(pb, "search", "Weird processes", "the bundled weird scanner's judgements, in its own words");
+    featureRow(pb, "zap", "Ask", "plain questions answered from the records, with receipts, no model");
     featureRow(pb, "info", "System info", "hardware, firmware and operating system facts");
     featureRow(pb, "power", "Startup apps", "what starts at login, and a watch on startup locations");
     featureRow(pb, "users", "Users", "who is logged in and what they are running");

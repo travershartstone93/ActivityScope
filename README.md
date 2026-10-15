@@ -84,6 +84,7 @@ Written in C++20 with Qt 6. It never asks for root.
   closed on the next start with an honest estimated end. Per-program network
   byte counts would need administrator rights, so they are deliberately
   absent: the history records who connected where, not how much they sent.
+- **Ask.** Plain questions answered from the records, with receipts.
 - **About.** The last sidebar entry explains the whole program from inside
   it: what it records, the guard, the investigation kit, every page, and the
   rules it lives by.
@@ -179,6 +180,21 @@ profile), Plasma login and logout scripts, session environment files, and in
 appears), fstab, crontab, passwd and group, system and per-user services,
 system autostart, `profile.d`, cron folders, udev rules, kernel module settings
 and pacman hooks. Files the user cannot read are still reported as changed.
+
+## ask: plain questions, deterministic answers
+
+    ask why did the fan scream last night
+    ask what crashed this week
+    ask what did blender do yesterday
+
+The Ask page (and the ask command) answer plain questions from the history
+database through unllm, the bundled deterministic language library (same
+author, vendor/unllm): time phrases, topic detection, typo-tolerant program
+names, BM25 retrieval and rule-based grammar, costing microseconds. No
+model runs and nothing leaves the machine. Every answer carries the records
+it stands on, and a question outside the machine's domain is refused in so
+many words ("I can't answer that"), never guessed at and never met with
+silence.
 
 ## hindsight: the config time machine
 

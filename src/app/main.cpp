@@ -5,6 +5,7 @@
 #include <QSettings>
 #include <QThread>
 #include <QTimer>
+#include <map>
 #include <unistd.h>
 
 #include "mainwindow.h"
@@ -72,10 +73,12 @@ int main(int argc, char** argv) {
         int delay = qEnvironmentVariableIsSet("AS_DELAY") ? qEnvironmentVariableIntValue("AS_DELAY") : 8;
         if (qEnvironmentVariableIsSet("AS_POPOUT")) window.togglePopout();
         const QString press = qEnvironmentVariable("AS_PRESS");
-        if (press == "check" || press == "weird")
+        const std::map<QString, std::pair<const char*, const char*>> presses = {
+            {"check", {"UpdatesPage", "check"}}, {"weird", {"WeirdPage", "scan"}}, {"ask", {"AskPage", "go"}}};
+        if (auto it = presses.find(press); it != presses.end())
             for (QObject* o : window.findChildren<QObject*>())
-                if (QString(o->metaObject()->className()) == (press == "check" ? "UpdatesPage" : "WeirdPage"))
-                    QMetaObject::invokeMethod(o, press == "check" ? "check" : "scan", Qt::QueuedConnection);
+                if (QString(o->metaObject()->className()) == it->second.first)
+                    QMetaObject::invokeMethod(o, it->second.second, Qt::QueuedConnection);
         QTimer::singleShot(delay * 1000, &window, [&window] {
             window.grab().save(qEnvironmentVariable("AS_SHOT"));
             if (qEnvironmentVariableIsSet("AS_POPOUT"))

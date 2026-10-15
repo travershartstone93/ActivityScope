@@ -27,6 +27,7 @@
 #include "pages/summarypage.h"
 #include "pages/logpage.h"
 #include "pages/aboutpage.h"
+#include "pages/askpage.h"
 #include "pages/weirdpage.h"
 #include "pages/updatespage.h"
 #include "pages/connectionspage.h"
@@ -47,7 +48,8 @@ namespace {
 // pages, Settings last.
 const struct { const char* icon; const char* label; } kPages[] = {
     {"layout-dashboard", "Summary"}, {"activity", "Performance"}, {"list-tree", "Processes"}, {"server", "History"},
-    {"scroll-text", "Log"},          {"search", "Weird processes"},   {"info", "System info"},         {"power", "Startup apps"},   {"users", "Users"},         {"cog", "Services"},
+    {"scroll-text", "Log"},          {"search", "Weird processes"},   {"zap", "Ask"},
+    {"info", "System info"},         {"power", "Startup apps"},   {"users", "Users"},         {"cog", "Services"},
     {"cable", "Connections"},        {"package", "Installed apps"}, {"download", "Updates"},     {"chart-pie", "Disk space"},
     {"gauge", "Power & clocks"},
     {"settings", "Settings"},   {"help-circle", "About"},
@@ -166,7 +168,7 @@ void MainWindow::build() {
                              .arg(P.panelHi.name(QColor::HexArgb), P.selection.name(QColor::HexArgb)));
         nav_->addButton(b, i);
         sv->addWidget(b);
-        if (i == 5 || i == 14) {
+        if (i == 6 || i == 15) {
             auto* sep = new QFrame;
             sep->setFixedHeight(1);
             sep->setStyleSheet(QString("background:%1; margin: 0 10px;").arg(P.border.name(QColor::HexArgb)));
@@ -217,6 +219,7 @@ void MainWindow::build() {
     settings_ = new SettingsPage(recorder_);
     log_ = new LogPage;
     weird_ = new WeirdPage;
+    askpage_ = new AskPage;
     about_ = new AboutPage;
     sysinfo_ = new SystemInfoPage;
     startup_ = new StartupPage;
@@ -227,8 +230,8 @@ void MainWindow::build() {
     updates_ = new UpdatesPage;
     disk_ = new DiskSpacePage;
     power_ = new PowerPage;
-    for (QWidget* w : std::initializer_list<QWidget*>{summary_, performance_, processes_, history_, log_, weird_, sysinfo_, startup_, users_, services_,
-                                                      connections_, installed_, updates_, disk_, power_, settings_, about_})
+    for (QWidget* w : std::initializer_list<QWidget*>{summary_, performance_, processes_, history_, log_, weird_, askpage_, sysinfo_, startup_, users_,
+                                                      services_, connections_, installed_, updates_, disk_, power_, settings_, about_})
         stack_->addWidget(w);
     connect(summary_, &SummaryPage::openHistory, this, [this] { openPage(3); });
     connect(history_, &HistoryPage::showProcess, this, [this](int pid) {
@@ -352,15 +355,15 @@ void MainWindow::refreshVisible() {
     case 3: history_->refresh(); break;
     case 4: log_->refresh(); break;
     case 5: weird_->refresh(); break;
-    case 6: sysinfo_->refresh(); break;
-    case 7: startup_->refresh(); break;
-    case 8: users_->refresh(); break;
-    case 9: services_->refresh(); break;
-    case 10: connections_->refresh(); break;
-    case 11: installed_->refresh(); break;
-    case 12: updates_->refresh(); break;
-    case 13: disk_->refresh(); break;
-    case 14: power_->refresh(); break;
+    case 7: sysinfo_->refresh(); break;
+    case 8: startup_->refresh(); break;
+    case 9: users_->refresh(); break;
+    case 10: services_->refresh(); break;
+    case 11: connections_->refresh(); break;
+    case 12: installed_->refresh(); break;
+    case 13: updates_->refresh(); break;
+    case 14: disk_->refresh(); break;
+    case 15: power_->refresh(); break;
     default: break;
     }
 }
