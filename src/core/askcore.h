@@ -29,8 +29,23 @@ class Sampler;
 // "why?", "when was that", "no, I meant firefox" and "it" all have
 // something to point at.
 
+// An answer is told in parts, each written by the code that decides it; compose_answer() joins them, with single spaces
+// and each part's own punctuation, in this order:
+//   scope      how the question was taken ("Taking ... as ...:", "Nothing in the records matches ...", "It is only
+//              00:01, so ... Yesterday's:"), in the order said
+//   lead       the direct reply to the question's form: "Yes.", "No.", "No: ...", a why's verdict; empty when none
+//   (opening)  "I can't say yes or no to that from the records. What they show:" when undecided
+//   body       the figures and lists
+//   notes      limits and coverage: what the records don't hold, the hourly records standing in, and the like
 struct AskResult {
-    std::string answer;                 // one short piece of prose, never empty
+    std::string answer;                 // the parts composed, set where the result leaves Ask (two questions in one line: both
+                                        // answers in turn); one short piece of prose, never empty
+    std::vector<std::string> scope;
+    std::string lead;
+    bool undecided = false;             // the records can't settle the yes or no; a part that can (the moment the machine
+                                        // slept through) supplies the lead and clears it
+    std::string body;
+    std::vector<std::string> notes;
     std::vector<std::string> receipts;  // the records the answer stands on
     bool refused = false;
     std::string branch;                 // which handler answered: "live:heat", "followup:why"
@@ -42,6 +57,9 @@ struct AskResult {
     std::vector<std::string> programs;  // the programs the reading named; one found from everyday words shows as
                                         // "movie player -> haruna"
 };
+
+// The answer's parts in their order (above); empty parts are left out.
+std::string compose_answer(const AskResult& r);
 
 class Ask {
 public:

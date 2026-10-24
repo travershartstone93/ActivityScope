@@ -692,6 +692,41 @@ void test_diagnose() {
     CHECK(!w2.refused && w2.answer.find("GPU fan") != std::string::npos);
 }
 
+void test_answer_parts() {
+    std::puts("answer parts");
+    // The parts in their order, single spaces, each part's own punctuation kept.
+    as::AskResult r;
+    r.notes = {"The records keep each process's peak, not its memory minute by minute."};
+    r.body = "Blender ran twice in that window.";
+    r.lead = "Yes.";
+    r.scope = {"It is only 02:38, so this morning hasn't started yet. Yesterday's:", "Taking \"the update\" as Installed 6 packages (Wed 20:40):"};
+    CHECK(as::compose_answer(r) ==
+          "It is only 02:38, so this morning hasn't started yet. Yesterday's: Taking \"the update\" as Installed 6 packages (Wed 20:40): "
+          "Yes. Blender ran twice in that window. The records keep each process's peak, not its memory minute by minute.");
+    // An empty part leaves no gap, and no parts compose to nothing.
+    as::AskResult e;
+    CHECK(as::compose_answer(e).empty());
+    e.scope = {""};
+    e.body = "No crash was recorded.";
+    CHECK(as::compose_answer(e) == "No crash was recorded.");
+    e.notes = {"The device records hold USB devices."};
+    CHECK(as::compose_answer(e) == "No crash was recorded. The device records hold USB devices.");
+    // Undecided: the opening says the records can't settle the yes or no, after any lead and before the body.
+    as::AskResult u;
+    u.undecided = true;
+    u.body = "Disk traffic reached 1.4 GB/s during four events.";
+    CHECK(as::compose_answer(u) == "I can't say yes or no to that from the records. What they show: Disk traffic reached 1.4 GB/s during four events.");
+    as::AskResult why = u;
+    why.lead = "The fan isn't spinning.";
+    CHECK(as::compose_answer(why) == "The fan isn't spinning. I can't say yes or no to that from the records. What they show: Disk traffic "
+                                     "reached 1.4 GB/s during four events.");
+    // A part that settles it supplies the lead in place of the opening, and the body's text stays as it was.
+    u.lead = "No: at Thu 12:00 it was asleep, from Thu 11:07 to Thu 12:26. Around then:";
+    u.undecided = false;
+    CHECK(as::compose_answer(u) == "No: at Thu 12:00 it was asleep, from Thu 11:07 to Thu 12:26. Around then: Disk traffic reached 1.4 GB/s during four events.");
+    CHECK(u.body == "Disk traffic reached 1.4 GB/s during four events.");
+}
+
 void test_askjudge() {
     std::puts("ask judge");
     Tree t;
@@ -739,6 +774,9 @@ void test_askjudge() {
     as::AskResult c = ask.ask("was it hotter than yesterday", int64_t(now));
     CHECK(c.answer.find("Yes. CPU temperature runs clearly 10 C hotter") == 0);
     CHECK(c.answer.find("of eight overlapping hours") != std::string::npos);
+    // The yes or no is the lead, the figures the body.
+    CHECK(c.lead == "Yes." && c.body.find("CPU temperature runs clearly 10 C hotter") == 0 && c.answer == as::compose_answer(c));
+    CHECK(n.lead == "Yes:" && n.body.find("CPU use is 55%") == 0);
 }
 
 void test_facts() {
@@ -1537,6 +1575,10 @@ void test_askcore() {
     as::AskResult usb = ask.ask("what usb devices did i plug in today", int64_t(now));
     CHECK(usb.answer.find("device event") != std::string::npos);
     CHECK(!usb.receipts.empty() && usb.receipts[0].find("USB drive") != std::string::npos);
+    // None in the window: what the device records hold is a note after the count.
+    as::AskResult usb0 = ask.ask("what usb devices did i plug in yesterday", int64_t(now));
+    CHECK(usb0.notes.size() == 1 && usb0.notes[0].rfind("The device records hold", 0) == 0 && usb0.answer == as::compose_answer(usb0) &&
+          usb0.answer.find(usb0.body + " The device records hold") == 0);
 
     // "When did i ..." reads the whole history and names the moment, even
     // when the record is older than the default day.
@@ -1566,6 +1608,35 @@ void test_askcore() {
         CHECK(ask2.open(dbp2));
         as::AskResult once = ask2.ask("did blender run today", int64_t(now));
         CHECK(once.answer.find("Yes, Blender ran once") != std::string::npos);
+    }
+    {
+        std::string dbp3 = dir + "/slept.db";
+        {
+            as::Store st3(dbp3);
+            as::Event e;
+            e.start = now - 2 * 3600 - 840;
+            e.end = now - 2 * 3600 - 660;
+            e.kinds = as::KindHeat;
+            e.peak_temp = 90;
+            e.summary = "the CPU reached 90 C";
+            st3.add_event(e);
+            st3.add_log({{now - 2 * 3600 - 300, "session", "Went to sleep", ""}});
+            st3.add_log({{now - 2 * 3600 + 1200, "session", "Woke from sleep", ""}});
+            st3.flush();
+        }
+        as::Ask ask3;
+        CHECK(ask3.open(dbp3));
+        ask3.load_language("vendor/unllm/data/synonyms.txt", "vendor/unllm/data/vectors.bin",
+                           "vendor/unllm/data/banter.txt", "vendor/unllm/data/rewrites.txt");
+        // A moment the machine slept through (19:25 to 19:50) in a window whose records can't settle the yes or no: the
+        // moment supplies the lead in place of the can't-say opening, and the body is as the handler left it.
+        as::AskResult und = ask3.ask("did the heat act up at 7:30 tonight", int64_t(now));
+        CHECK(und.lead == "No: at Tue 19:30 it was asleep, from Tue 19:25 to Tue 19:50. Around then:" && !und.undecided && und.scope.empty() &&
+              und.body.find("The CPU reached 90 C during one event.") == 0 && und.answer == und.lead + " " + und.body);
+        // One the records settle keeps its own yes, and the moment is said before it as how the question was taken.
+        as::AskResult yes = ask3.ask("was there trouble with the heat at 7:30 tonight", int64_t(now));
+        CHECK(yes.lead.empty() && yes.scope.size() == 1 && yes.scope[0] == "At Tue 19:30 it was asleep, from Tue 19:25 to Tue 19:50. Around then:" &&
+              yes.answer == as::compose_answer(yes) && yes.answer.find("Around then: Yes, the CPU reached 90 C") != std::string::npos);
     }
 
     // The full identity answer and a live question, against the real machine:
@@ -1635,6 +1706,9 @@ void test_askcore() {
         early.tm_isdst = -1;
         as::AskResult morning = c.ask("what happened this morning", int64_t(std::mktime(&early)));
         CHECK(morning.answer.find("It is only 02:38, so this morning hasn't started yet. Yesterday's: ") == 0);
+        // How the question was taken is the scope, before the body it leaves untouched.
+        CHECK(morning.scope.size() == 1 && morning.scope[0] == "It is only 02:38, so this morning hasn't started yet. Yesterday's:" &&
+              morning.answer == morning.scope[0] + " " + morning.body);
         // Summaries are paragraphs.
         as::AskResult sum = at("summarize today");
         CHECK(sum.answer.find("In that window:") == 0 && sum.answer.find("heat event") != std::string::npos);
@@ -5032,6 +5106,7 @@ int main() {
     test_facts();
     test_judge();
     test_diagnose();
+    test_answer_parts();
     test_askjudge();
     test_end_process();
     test_pause_resume();
