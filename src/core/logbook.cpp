@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cctype>
 #include <ctime>
+#include <istream>
 #include <regex>
 
 #include "events.h"
@@ -69,8 +70,11 @@ std::optional<LogEntry> classify_journal(const JournalLine& j) {
     if (j.identifier == "tailscaled" && (has(m, "Switching ipn state Stopped -> Running") || has(m, "state Running"))) return make("network", "Tailscale connected");
 
     if (j.identifier == "systemd" && (has(m, "Failed with result") || has(m, "Main process exited, code=dumped"))) {
-        std::string unit = trim(m.substr(0, m.find(':')));
-        return make("services", unit + " failed: " + trim(m.substr(m.find(':') + 1)));
+        // "<unit>: <what happened>"; a unit name may itself hold a colon
+        // (dbus-:1.2-org.kde.KSplash@2.service) but never a space.
+        auto colon = m.find(": ");
+        std::string unit = trim(m.substr(0, colon));
+        return make("services", unit + " failed: " + trim(m.substr(colon == std::string::npos ? 0 : colon + 2)));
     }
     if (j.identifier == "systemd-coredump" && has(m, "dumped core")) {
         static const std::regex prog("Process [0-9]+ \\(([^)]+)\\)");
@@ -166,6 +170,24 @@ std::optional<LogEntry> PacmanParser::feed(const std::string& line) {
     return e;
 }
 
+std::vector<LogEntry> read_pacman(std::istream& in, long long offset, long long* resume) {
+    std::vector<LogEntry> out;
+    std::string line;
+    PacmanParser parser;
+    long long pos = offset;
+    long long last_complete = offset;
+    while (std::getline(in, line)) {
+        pos += static_cast<long long>(line.size()) + 1;
+        if (auto e = parser.feed(line)) out.push_back(*e);
+        // Resume only where the parser holds nothing: a read that stops inside a transaction (after its scriptlets'
+        // lines, which are no "[ALPM]" lines) or between a command and its transaction reads them again whole next
+        // time, the command with them.
+        if (parser.idle()) last_complete = pos;
+    }
+    *resume = last_complete;
+    return out;
+}
+
 std::optional<ToolUse> recognise_tool(const std::string& name, const std::string& cmd) {
     // A shell running "esptool.py ..." only mentions the tool; the tool shows
     // up as its own process and is logged from there.
@@ -188,17 +210,35 @@ std::optional<ToolUse> recognise_tool(const std::string& name, const std::string
                 if (x.size() > std::string(e).size() && x.ends_with(e)) return x;
         return {};
     };
-    const bool esptool = name == "esptool" || name == "esptool.py" || has(cmd, "esptool.py ") || has(cmd, "/esptool ") ||
-                         has(cmd, "esptool write_flash") || has(cmd, " -m esptool");
-    if (esptool && (has(cmd, "write_flash") || has(cmd, "write-flash")))
+    // The tool must BE the command: argv[0], or the script an interpreter is
+    // running, or python's "-m esptool". Never a substring of the raw line: a
+    // curl payload QUOTING "idf.py flash" (chat text, documentation) is not
+    // a flash, and that exact false positive has happened here.
+    auto base = [](const std::string& s) {
+        auto sl = s.rfind('/');
+        return sl == std::string::npos ? s : s.substr(sl + 1);
+    };
+    const std::string tool0 = a.empty() ? "" : base(a[0]);
+    const bool interp = starts_with(tool0, "python") || tool0 == "uv" || tool0 == "pipx";
+    const std::string tool = interp && a.size() > 1 && a[1] != "-m" ? base(a[1]) : tool0;
+    const bool mod_esptool = interp && a.size() > 2 && a[1] == "-m" && base(a[2]) == "esptool";
+    auto arg_is = [&](std::initializer_list<const char*> words) {
+        for (std::size_t i = 1; i < a.size(); ++i)
+            for (const char* w : words)
+                if (a[i] == w) return true;
+        return false;
+    };
+    const bool esptool = name == "esptool" || name == "esptool.py" || tool == "esptool" ||
+                         tool == "esptool.py" || mod_esptool;
+    if (esptool && arg_is({"write_flash", "write-flash"}))
         return ToolUse{"flashing", "Flashed an ESP board with esptool", value_after({"--port", "-p"}), first_with({".bin"})};
-    if (esptool && (has(cmd, "erase_flash") || has(cmd, "erase-flash")))
+    if (esptool && arg_is({"erase_flash", "erase-flash"}))
         return ToolUse{"flashing", "Erased an ESP board's flash with esptool", value_after({"--port", "-p"}), {}};
-    if (name == "arduino-cli" && a.size() > 1 && (a[1] == "upload" || has(cmd, " upload ")))
+    if (name == "arduino-cli" && arg_is({"upload"}))
         return ToolUse{"flashing", "Uploaded a sketch with arduino-cli", value_after({"--port", "-p"}), value_after({"--input-file", "-i", "--input-dir"})};
-    if ((name == "idf.py" || has(cmd, "idf.py")) && has(cmd, " flash"))
+    if ((name == "idf.py" || tool == "idf.py") && arg_is({"flash", "app-flash", "encrypted-flash"}))
         return ToolUse{"flashing", "Flashed a board with ESP-IDF (idf.py)", value_after({"--port", "-p"}), {}};
-    if ((name == "pio" || name == "platformio") && has(cmd, "upload"))
+    if ((name == "pio" || name == "platformio") && arg_is({"upload"}))
         return ToolUse{"flashing", "Uploaded firmware with PlatformIO", value_after({"--upload-port"}), {}};
     if (name == "avrdude") return ToolUse{"flashing", "Flashed a board with avrdude", value_after({"-P"}), value_after({"-U"})};
     if (name == "dfu-util") return ToolUse{"flashing", "Flashed a device over DFU", {}, value_after({"-D", "--download"})};

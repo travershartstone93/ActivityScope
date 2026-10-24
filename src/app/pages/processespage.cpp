@@ -164,8 +164,19 @@ ProcessesPage::ProcessesPage(QWidget* parent) : QWidget(parent) {
         }
         showDetails();
     });
-    connect(view_->header(), &QHeaderView::sortIndicatorChanged, this, [this] {
-        remember();
+    connect(view_->header(), &QHeaderView::sortIndicatorChanged, this, [this](int col, Qt::SortOrder order) {
+        // A first click on a figure column asks for the biggest first, the way a
+        // task manager reads; Qt's own first click would put the idle ones on top.
+        const bool figure = col == ProcessModel::Cpu || col == ProcessModel::Memory || col == ProcessModel::Disk ||
+                            col == ProcessModel::Gpu;
+        const bool fresh = col != sortCol_;
+        sortCol_ = col;
+        if (figure && fresh && order == Qt::AscendingOrder) {
+            view_->header()->setSortIndicator(col, Qt::DescendingOrder);  // comes back through here, descending
+            return;
+        }
+        // The sort rebuilt the model, which collapses every row; reopen what was open
+        // at the last refresh (remember() now would only see the collapse).
         restore();
     });
     connect(pause_, &QPushButton::clicked, this, [this] {

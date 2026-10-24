@@ -12,6 +12,30 @@ bool word_char(char c) {
     return std::isalnum(static_cast<unsigned char>(c)) || c == '\'' || c == '-' || c == '_' || c == '.' || c == '/' || c == '%';
 }
 
+// The irregular past forms: with the regular "-ed" ones the stemmer strips,
+// they mark a question as being about something that happened rather than
+// something happening now ("was the disk busy" against "is the disk busy").
+const std::set<std::string>& past_forms() {
+    static const std::set<std::string> s = {
+        "was", "were", "did", "had", "got", "went", "froze", "died", "ate", "ran", "took", "came", "made",
+        "began", "kept", "lost", "hit", "woke", "slept", "broke", "fell", "hung", "sat", "spun", "threw",
+        "wrote", "read", "ran", "been", "crashed", "happened", "started", "stopped", "used", "spiked"};
+    return s;
+}
+
+}  // namespace
+
+bool past_tense(const std::vector<Token>& tokens) {
+    for (const auto& t : tokens) {
+        if (past_forms().count(t.lower)) return true;
+        // A regular past form: the stemmer took an "-ed" off it ("rebooted" -> "reboot").
+        if (t.lower.size() > 4 && t.lower.compare(t.lower.size() - 2, 2, "ed") == 0 && t.norm != t.lower) return true;
+    }
+    return false;
+}
+
+namespace {
+
 // Irregular forms the light stemmer below would get wrong. Small on purpose:
 // it grows only when the exam demands it.
 const std::map<std::string, std::string>& lemma_exceptions() {
@@ -22,6 +46,17 @@ const std::map<std::string, std::string>& lemma_exceptions() {
         {"froze", "freeze"},  {"frozen", "freeze"}, {"died", "die"}, {"dying", "die"}, {"ate", "eat"},
         {"hotter", "hot"},    {"hottest", "hot"}, {"worse", "bad"},  {"worst", "bad"}, {"slower", "slow"},
         {"slowest", "slow"},  {"louder", "loud"}, {"screaming", "scream"},
+        // Contractions and leftovers fold onto their stop-word heads, so
+        // "what's wrong" is not scored as an unknown word called "what's".
+        {"am", "be"},         {"what's", "what"}, {"it's", "it"},    {"who's", "who"}, {"that's", "that"},
+        {"didn't", "do"},     {"didnt", "do"},    {"doesn't", "do"}, {"doesnt", "do"}, {"don't", "do"},
+        {"dont", "do"},       {"wasn't", "be"},   {"wasnt", "be"},   {"isn't", "be"},  {"isnt", "be"},
+        {"aren't", "be"},     {"arent", "be"},    {"won't", "will"}, {"wont", "will"}, {"can't", "can"},
+        {"cant", "can"},      {"hasn't", "have"}, {"haven't", "have"},
+        // Short -ed/-ing forms the guarded stemmer leaves whole.
+        {"used", "use"},      {"using", "use"},   {"doing", "do"},   {"wrote", "write"},
+        {"made", "make"},     {"making", "make"}, {"caused", "cause"},
+        {"charging", "charge"}, {"charged", "charge"}, {"filled", "fill"}, {"filling", "fill"},
     };
     return m;
 }
@@ -70,7 +105,11 @@ std::vector<Token> tokenize(const std::string& text) {
             continue;
         }
         std::size_t j = i;
-        while (j < text.size() && word_char(text[j])) ++j;
+        // A colon between digits is part of a clock: "9:20" is one word.
+        while (j < text.size() && (word_char(text[j]) || (text[j] == ':' && j > i && j + 1 < text.size() &&
+                                                         isdigit(static_cast<unsigned char>(text[j - 1])) &&
+                                                         isdigit(static_cast<unsigned char>(text[j + 1])))))
+            ++j;
         Token t;
         t.text = text.substr(i, j - i);
         // trailing punctuation that word_char lets through ("3pm.", "usb-")
@@ -79,6 +118,17 @@ std::vector<Token> tokenize(const std::string& text) {
         t.lower.reserve(t.text.size());
         for (char c : t.text) t.lower += char(std::tolower(static_cast<unsigned char>(c)));
         t.norm = normalize_word(t.lower);
+        // "9 pm", "9:36 am": the am or pm belongs to the clock before it, as in "9pm".
+        if ((t.lower == "am" || t.lower == "pm") && !out.empty() && !out.back().lower.empty() &&
+            out.back().lower.find_first_not_of("0123456789:") == std::string::npos &&
+            isdigit(static_cast<unsigned char>(out.back().lower.back()))) {
+            Token& clock = out.back();
+            clock.text += t.text;
+            clock.lower += t.lower;
+            clock.norm = normalize_word(clock.lower);
+            i = j;
+            continue;
+        }
         if (!t.text.empty()) out.push_back(std::move(t));
         i = j;
     }

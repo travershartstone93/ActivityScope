@@ -4,6 +4,7 @@
 #include <sqlite3.h>
 #include <sys/stat.h>
 
+#include <algorithm>
 #include <cstdlib>
 
 namespace as {
@@ -80,6 +81,19 @@ Store::Store(std::string path) {
         ppid INTEGER, parent TEXT, cpu_seconds REAL, peak_rss REAL, UNIQUE(pid, started)))");
     exec("CREATE INDEX IF NOT EXISTS procs_started ON procs(started)");
     exec("CREATE INDEX IF NOT EXISTS procs_ended ON procs(ended)");
+    exec("CREATE INDEX IF NOT EXISTS procs_pid ON procs(pid)");
+    // Boot-time drift used to mint twin rows for one process, a second
+    // apart. The twin with less CPU history is the stub; fold its peak
+    // memory into the keeper, then drop it. Idempotent, cheap with the pid
+    // index, and add_procs no longer creates new twins.
+    exec(R"(UPDATE procs SET peak_rss = MAX(peak_rss, IFNULL((
+                SELECT MAX(b.peak_rss) FROM procs b WHERE b.pid = procs.pid AND b.rowid <> procs.rowid
+                   AND b.started > procs.started - 2 AND b.started < procs.started + 2
+                   AND (b.cpu_seconds < procs.cpu_seconds OR (b.cpu_seconds = procs.cpu_seconds AND b.rowid < procs.rowid))), 0)))");
+    exec(R"(DELETE FROM procs WHERE rowid IN (
+                SELECT a.rowid FROM procs a JOIN procs b ON a.pid = b.pid AND a.rowid <> b.rowid
+                   AND a.started > b.started - 2 AND a.started < b.started + 2
+                WHERE a.cpu_seconds < b.cpu_seconds OR (a.cpu_seconds = b.cpu_seconds AND a.rowid < b.rowid)))");
     exec(R"(CREATE TABLE IF NOT EXISTS connections(
         program TEXT, exe TEXT, remote TEXT, port INTEGER, proto TEXT, first_seen REAL, last_seen REAL,
         UNIQUE(program, remote, port, proto)))");
@@ -89,13 +103,23 @@ Store::Store(std::string path) {
         event_id INTEGER, t REAL, cpu REAL, mem_pct REAL, pressure REAL, disk_bps REAL,
         gpu REAL, temp REAL, fan REAL))");
     exec("CREATE INDEX IF NOT EXISTS event_samples_event ON event_samples(event_id)");
+    // The judge's long memory: per-metric hourly statistics that outlive the
+    // 24 h raw samples. Lower-nearest-rank percentiles, computed in C++.
+    exec(R"(CREATE TABLE IF NOT EXISTS samples_hourly(
+        hour_ts INTEGER NOT NULL, metric TEXT NOT NULL, n INTEGER, med REAL, p05 REAL, p95 REAL,
+        max REAL, dropouts INTEGER, on_battery_frac REAL, PRIMARY KEY(hour_ts, metric)))");
     // Columns added after the first release; each ALTER is a no-op when present.
     for (const char* add : {"ALTER TABLE event_culprits ADD COLUMN faults REAL", "ALTER TABLE samples ADD COLUMN guard REAL",
                             "ALTER TABLE samples ADD COLUMN guard_limit REAL", "ALTER TABLE events ADD COLUMN min_margin REAL",
                             "ALTER TABLE events ADD COLUMN min_seconds REAL", "ALTER TABLE events ADD COLUMN guard_limit REAL",
                             "ALTER TABLE events ADD COLUMN guard_zone TEXT", "ALTER TABLE events ADD COLUMN dead_fans TEXT",
                             "ALTER TABLE event_samples ADD COLUMN guard REAL", "ALTER TABLE events ADD COLUMN notable INTEGER",
-                            "ALTER TABLE procs ADD COLUMN end_estimated INTEGER"})
+                            "ALTER TABLE procs ADD COLUMN end_estimated INTEGER",
+                            "ALTER TABLE samples ADD COLUMN battery_pct REAL",
+                            "ALTER TABLE samples ADD COLUMN on_ac REAL",
+                            "ALTER TABLE samples ADD COLUMN disk_free_pct REAL",
+                            "ALTER TABLE samples ADD COLUMN swap_total REAL",
+                            "ALTER TABLE samples_hourly ADD COLUMN min REAL"})
         sqlite3_exec(db_, add, nullptr, nullptr, nullptr);
     // The view names columns the ALTERs add, so it is built after them.
     exec("DROP VIEW IF EXISTS v_timeline");
@@ -132,6 +156,7 @@ void Store::add_sample(const Snapshot& s) {
     r.kernel = s.cpu.kernel;
     r.mem_pct = s.mem.percent();
     r.swap_used = double(s.mem.swap_total - std::min(s.mem.swap_total, s.mem.swap_free));
+    r.swap_total = s.mem.total > 0 ? double(s.mem.swap_total) : -1;  // 0 is a machine without swap
     r.pressure = s.mem.pressure_some10.or_else(0);
     for (const auto& d : s.disks) {
         r.disk_r += d.read_bps;
@@ -150,6 +175,9 @@ void Store::add_sample(const Snapshot& s) {
     for (const auto& f : s.power.fans)
         if (f.percent.ok()) r.fan = std::max(r.fan, double(f.percent.get()));
     r.power = s.power.battery_w.or_else(-1);
+    r.battery_pct = s.power.battery_pct.or_else(-1);
+    r.on_ac = s.power.on_ac.ok() ? (s.power.on_ac.get() ? 1 : 0) : -1;
+    r.disk_free_pct = s.root_free_pct.or_else(-1);
     r.freq = s.cpu.freq_mhz.or_else(-1);
     r.guard = s.guard.raw.or_else(-1);  // the history keeps what the sensor really said
     r.guard_limit = s.guard.limit.or_else(-1);
@@ -167,12 +195,14 @@ void Store::flush() {
     exec("BEGIN");
     {
         Stmt st(db_, "INSERT OR REPLACE INTO samples(t,cpu,kernel,mem_pct,swap_used,pressure,disk_r,disk_w,net_rx,net_tx,gpu,"
-                     "gpu_mem,temp,fan,power,freq,procs,cores,guard,guard_limit) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+                     "gpu_mem,temp,fan,power,freq,procs,cores,guard,guard_limit,battery_pct,on_ac,disk_free_pct,swap_total) "
+                     "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
         for (const auto& r : pending_) {
             st.bind(1, r.t).bind(2, r.cpu).bind(3, r.kernel).bind(4, r.mem_pct).bind(5, r.swap_used)
                 .bind(6, r.pressure).bind(7, r.disk_r).bind(8, r.disk_w).bind(9, r.net_rx).bind(10, r.net_tx)
                 .bind(11, r.gpu).bind(12, r.gpu_mem).bind(13, r.temp).bind(14, r.fan).bind(15, r.power)
-                .bind(16, r.freq).bind(17, int64_t(r.procs)).bind(18, r.cores).bind(19, r.guard).bind(20, r.guard_limit);
+                .bind(16, r.freq).bind(17, int64_t(r.procs)).bind(18, r.cores).bind(19, r.guard).bind(20, r.guard_limit)
+                .bind(21, r.battery_pct).bind(22, r.on_ac).bind(23, r.disk_free_pct).bind(24, r.swap_total);
             st.run();
         }
     }
@@ -251,11 +281,94 @@ void Store::prune(double now, double detail_hours, double event_days) {
     exec("PRAGMA wal_checkpoint(TRUNCATE)");
 }
 
+void Store::rollup_hours(double now) {
+    if (!db_) return;
+    const int64_t top = int64_t(now / 3600) * 3600;  // the current, incomplete hour
+    std::string last_s = meta("rollup_last_hour");
+    int64_t last = last_s.empty() ? top - 24 * 3600 : int64_t(std::stoll(last_s));
+    if (last >= top - 3600) return;
+    // Per metric: which samples column, and whether -1 means "sensor absent".
+    struct Metric { const char* name; int col; bool sentinel; };
+    static const Metric metrics[] = {
+        {"cpu", 0, false},   {"temp", 1, true},     {"mem_pct", 2, false}, {"disk_rw", 3, false},
+        {"net_rxtx", 4, false}, {"fan", 5, true},   {"power", 6, true},    {"gpu", 7, true},
+        {"swap_used", 8, false}, {"pressure", 9, false}, {"disk_free_pct", 10, true},
+        {"swap_total", 11, true}, {"battery_pct", 12, true}, {"on_ac", 13, true},
+    };
+    constexpr int N = int(std::size(metrics));
+    // Lower nearest rank: deterministic, no interpolation; documented in store.h.
+    auto stat = [](std::vector<double>& v, double q) {
+        std::size_t idx = std::size_t(q * double(v.size() - 1));
+        std::nth_element(v.begin(), v.begin() + long(idx), v.end());
+        return v[idx];
+    };
+    exec("BEGIN");
+    {
+        Stmt ins(db_, "INSERT OR REPLACE INTO samples_hourly(hour_ts,metric,n,med,p05,p95,max,dropouts,on_battery_frac,min) "
+                      "VALUES(?,?,?,?,?,?,?,?,?,?)");
+        for (int64_t h = last + 3600; h + 3600 <= top; h += 3600) {
+            std::vector<double> vals[N];
+            int64_t drops[N] = {};
+            int64_t on_batt = 0, ac_known = 0, rows = 0;
+            Stmt sel(db_, "SELECT cpu,temp,mem_pct,disk_r+disk_w,net_rx+net_tx,fan,power,gpu,swap_used,pressure,"
+                          "IFNULL(disk_free_pct,-1),IFNULL(swap_total,-1),IFNULL(battery_pct,-1),IFNULL(on_ac,-1) "
+                          "FROM samples WHERE t >= ? AND t < ?");
+            sel.bind(1, double(h)).bind(2, double(h + 3600));
+            while (sel.step()) {
+                ++rows;
+                for (int c = 0; c < N; ++c) {
+                    double v = sel.d(c);
+                    if (metrics[c].sentinel && v < 0) ++drops[c];
+                    else vals[c].push_back(v);
+                }
+                double ac = sel.d(13);
+                if (ac >= 0) { ++ac_known; if (ac == 0) ++on_batt; }
+            }
+            if (rows == 0) continue;  // an hour the machine slept through
+            double batt_frac = ac_known ? double(on_batt) / double(ac_known) : -1;
+            for (const auto& m : metrics) {
+                auto& v = vals[m.col];
+                if (v.empty()) continue;  // the sensor was absent the whole hour
+                double mx = *std::max_element(v.begin(), v.end());
+                double mn = *std::min_element(v.begin(), v.end());
+                ins.bind(1, h).bind(2, std::string(m.name)).bind(3, int64_t(v.size()))
+                    .bind(4, stat(v, 0.5)).bind(5, stat(v, 0.05)).bind(6, stat(v, 0.95)).bind(7, mx)
+                    .bind(8, drops[m.col]).bind(9, batt_frac).bind(10, mn);
+                ins.run();
+            }
+        }
+    }
+    exec("COMMIT");
+    set_meta("rollup_last_hour", std::to_string(top - 3600));
+    Stmt(db_, "DELETE FROM samples_hourly WHERE hour_ts < ?").bind(1, int64_t(now - 400.0 * 86400)).run();
+}
+
+std::vector<HourlyRow> Store::hourly(const std::string& metric, double from, double to) const {
+    std::vector<HourlyRow> out;
+    if (!db_) return out;
+    Stmt st(db_, "SELECT hour_ts,n,med,p05,p95,max,dropouts,IFNULL(on_battery_frac,-1),IFNULL(min,-1) FROM samples_hourly "
+                 "WHERE metric = ? AND hour_ts >= ? AND hour_ts < ? ORDER BY hour_ts");
+    st.bind(1, metric).bind(2, int64_t(from)).bind(3, int64_t(to));
+    while (st.step()) {
+        HourlyRow r;
+        r.hour_ts = st.i(0);
+        r.metric = metric;
+        r.n = st.i(1);
+        r.med = st.d(2); r.p05 = st.d(3); r.p95 = st.d(4); r.max = st.d(5);
+        r.dropouts = st.i(6);
+        r.on_battery_frac = st.d(7);
+        r.min = st.d(8);
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+
 std::vector<StoredSample> Store::samples(double from, double to) const {
     std::vector<StoredSample> out;
     if (!db_) return out;
     Stmt st(db_, "SELECT t,cpu,kernel,mem_pct,swap_used,pressure,disk_r,disk_w,net_rx,net_tx,gpu,gpu_mem,temp,fan,power,freq,"
-                 "procs,cores,IFNULL(guard,-1),IFNULL(guard_limit,-1) FROM samples WHERE t >= ? AND t <= ? ORDER BY t");
+                 "procs,cores,IFNULL(guard,-1),IFNULL(guard_limit,-1),IFNULL(battery_pct,-1),IFNULL(on_ac,-1),"
+                 "IFNULL(disk_free_pct,-1),IFNULL(swap_total,-1) FROM samples WHERE t >= ? AND t <= ? ORDER BY t");
     st.bind(1, from).bind(2, to);
     while (st.step()) {
         StoredSample r;
@@ -263,6 +376,7 @@ std::vector<StoredSample> Store::samples(double from, double to) const {
         r.pressure = st.d(5); r.disk_r = st.d(6); r.disk_w = st.d(7); r.net_rx = st.d(8); r.net_tx = st.d(9);
         r.gpu = st.d(10); r.gpu_mem = st.d(11); r.temp = st.d(12); r.fan = st.d(13); r.power = st.d(14);
         r.freq = st.d(15); r.procs = int(st.i(16)); r.cores = st.t(17); r.guard = st.d(18); r.guard_limit = st.d(19);
+        r.battery_pct = st.d(20); r.on_ac = st.d(21); r.disk_free_pct = st.d(22); r.swap_total = st.d(23);
         out.push_back(std::move(r));
     }
     return out;
@@ -430,12 +544,22 @@ void Store::add_procs(const std::vector<ProcessRecord>& records) {
     if (!db_ || records.empty()) return;
     exec("BEGIN");
     {
+        // The start time is derived from an estimate of when boot was, and
+        // that estimate can drift by a second across passes (suspend, clock
+        // adjustments). An existing row within two seconds IS this process;
+        // its stored start time is reused so the upsert hits it instead of
+        // minting a duplicate. close_stale_procs uses the same tolerance.
+        Stmt match(db_, "SELECT started FROM procs WHERE pid = ? AND started > ? AND started < ?");
         Stmt st(db_, "INSERT INTO procs(pid,started,ended,name,exe,cmdline,user,unit,ppid,parent,cpu_seconds,peak_rss) "
                      "VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(pid, started) DO UPDATE SET "
                      "ended = COALESCE(excluded.ended, ended), cpu_seconds = excluded.cpu_seconds, "
                      "peak_rss = MAX(peak_rss, excluded.peak_rss)");
         for (const auto& r : records) {
-            st.bind(1, int64_t(r.pid)).bind(2, r.started);
+            double started = r.started;
+            match.bind(1, int64_t(r.pid)).bind(2, r.started - 2).bind(3, r.started + 2);
+            if (match.step()) started = match.d(0);
+            sqlite3_reset(match.s);
+            st.bind(1, int64_t(r.pid)).bind(2, started);
             if (r.ended > 0) st.bind(3, r.ended);
             else sqlite3_bind_null(st.s, 3);
             st.bind(4, r.name).bind(5, r.exe).bind(6, r.cmdline).bind(7, r.user).bind(8, r.unit).bind(9, int64_t(r.ppid))

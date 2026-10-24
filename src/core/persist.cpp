@@ -74,7 +74,8 @@ StartupWatch::~StartupWatch() {
 void StartupWatch::add(const std::string& path, const std::string& what, std::set<std::string> only, bool recurse) {
     struct stat st {};
     if (fd_ < 0 || ::stat(path.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) return;
-    int wd = inotify_add_watch(fd_, path.c_str(), IN_CREATE | IN_DELETE | IN_CLOSE_WRITE | IN_MOVED_TO | IN_MOVED_FROM | IN_ATTRIB);
+    // IN_MODIFY keeps a file that is still being written from going quiet.
+    int wd = inotify_add_watch(fd_, path.c_str(), IN_CREATE | IN_DELETE | IN_MODIFY | IN_CLOSE_WRITE | IN_MOVED_TO | IN_MOVED_FROM | IN_ATTRIB);
     if (wd < 0) return;  // not readable as this user
     dirs_[wd] = {path, what, only, recurse};
     for (const auto& name : list_dir(path)) {
@@ -82,6 +83,7 @@ void StartupWatch::add(const std::string& path, const std::string& what, std::se
         std::string full = path + "/" + name;
         struct stat s2 {};
         if (::lstat(full.c_str(), &s2) != 0) continue;
+        present_.insert(full);
         if (S_ISDIR(s2.st_mode)) {
             if (recurse) add(full, what, {}, true);
         } else {
@@ -131,9 +133,9 @@ std::vector<LogEntry> StartupWatch::poll(double now) {
                                                         : "changed";
             if ((ev->mask & IN_ISDIR) && d->second.recurse && change == "added") add(full, d->second.what, {}, true);
             auto& pend = pending_[full];
-            // Editors write in several steps; keep the most telling verb.
-            if (pend.second == "removed" && change == "added") pend.second = "replaced";
-            else if (pend.second.empty() || change == "added" || change == "removed") pend.second = change;
+            // The verb is settled once the file goes quiet; only a change of
+            // permissions alone is told apart here.
+            if (pend.second.empty() || change != "permissions changed") pend.second = change;
             pend.first = now;
             wd_of_file_[full] = ev->wd;
         }
@@ -150,8 +152,21 @@ std::vector<LogEntry> StartupWatch::poll(double now) {
         std::string name = file.substr(file.rfind('/') + 1);
         struct stat st {};
         bool gone = ::lstat(file.c_str(), &st) != 0;
+        bool was = present_.count(file) > 0;
+        if (gone) present_.erase(file);
+        else present_.insert(file);
+        // Judged by the file's life, not by the events or its name: one that
+        // came and went within this quiet spell (an installer's or sed's
+        // temporary file) changed nothing; one there before and after was
+        // changed, however it was written (in place, or renamed over).
+        if (!was && gone) {
+            wd_of_file_.erase(file);
+            it = pending_.erase(it);
+            continue;
+        }
         if (gone) change = "removed";
-        else if (change == "removed") change = "replaced";
+        else if (!was) change = "added";
+        else if (change != "permissions changed") change = "changed";
         LogEntry e;
         e.t = it->second.first;
         e.category = name == "ld.so.preload" && !gone ? "problems" : "startup";

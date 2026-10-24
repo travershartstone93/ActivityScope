@@ -134,7 +134,10 @@ QFont Theme::body(int px, int weight) const {
     f.setPixelSize(px);
     f.setWeight(QFont::Weight(weight));
     // Tabular digits keep live numbers from shifting as they change.
+    // QFont::setFeature arrived in Qt 6.7; older Qt just gets ordinary digits.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
     f.setFeature(QFont::Tag("tnum"), 1);
+#endif
     return f;
 }
 

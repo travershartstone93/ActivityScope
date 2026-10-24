@@ -125,6 +125,7 @@ private:
     };
     Roots r_;
     std::unordered_map<int, Known> known_;
+    std::unordered_map<int, uint64_t> carry_;  // ended children's ticks a parent has not shown yet
     std::unordered_map<int, std::string> users_;
     double prev_t_ = 0;
     double boot_epoch_ = 0;

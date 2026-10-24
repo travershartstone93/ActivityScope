@@ -368,13 +368,24 @@ void UpdatesPage::fill() {
             }
         } else {
             ++updatable;
-            auto* up = new QPushButton("Update");
-            up->setToolTip(QString::fromStdString(as::update_one_command(u)));
-            connect(up, &QPushButton::clicked, this, [this, u] { runInTerminal("updating " + QString::fromStdString(u.name), QString::fromStdString(as::update_one_command(u))); });
+            if (u.aur) {
+                // AUR packages build standalone, so a one-package update is
+                // sound. A repo package is not: installing one against stale
+                // lists is either a no-op or the partial upgrade Arch warns
+                // about, so repo packages only update through Update all.
+                auto* up = new QPushButton("Update");
+                up->setToolTip(QString::fromStdString(as::update_one_command(u)));
+                connect(up, &QPushButton::clicked, this, [this, u] { runInTerminal("updating " + QString::fromStdString(u.name), QString::fromStdString(as::update_one_command(u))); });
+                h->addWidget(up);
+            } else {
+                auto* l = new QLabel("via Update all");
+                l->setToolTip("Repo packages update together: one alone against unrefreshed lists would do nothing, or make a partial upgrade.");
+                l->setStyleSheet(QString("color:%1;").arg(pal().dim.name()));
+                h->addWidget(l);
+            }
             auto* hold = new QPushButton("Hold");
             hold->setToolTip("Keep this package at its current version.");
             connect(hold, &QPushButton::clicked, this, [this, n = u.name] { setHeld(n, true); });
-            h->addWidget(up);
             h->addWidget(hold);
         }
         tree_->setItemWidget(it, 5, cell);
@@ -431,8 +442,20 @@ void UpdatesPage::runInTerminal(const QString& what, const QString& command) {
         args = {"-e", "bash", "-c", script};
     }
     if (term.isEmpty()) {
+        term = QStandardPaths::findExecutable("kitty");
+        args = {"bash", "-c", script};
+    }
+    if (term.isEmpty()) {
+        term = QStandardPaths::findExecutable("alacritty");
+        args = {"-e", "bash", "-c", script};
+    }
+    if (term.isEmpty()) {
+        term = QStandardPaths::findExecutable("foot");
+        args = {"bash", "-c", script};
+    }
+    if (term.isEmpty()) {
         recheckOnClose_ = false;
-        status_->setText("No terminal program was found (gnome-terminal or konsole), so nothing was run.");
+        status_->setText("No terminal program was found (gnome-terminal, konsole, kitty, alacritty or foot), so nothing was run.");
         return;
     }
     auto* p = new QProcess(this);

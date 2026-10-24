@@ -33,6 +33,7 @@ private:
     std::map<std::string, std::string> contents_;   // file -> last known text (small text files)
     std::map<std::string, std::pair<double, std::string>> pending_;  // file -> (last event, what happened)
     std::map<std::string, int> wd_of_file_;
+    std::set<std::string> present_;                 // files that existed when last looked at
 };
 
 }  // namespace as

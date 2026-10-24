@@ -2,6 +2,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <unordered_set>
 
 #include "providers.h"
@@ -55,6 +56,11 @@ void ProcessProvider::sample(Snapshot& snap, int cpus, const std::unordered_map<
     const double machine_ticks = dt * double(hz_) * double(std::max(1, cpus));
     const int my_uid = static_cast<int>(getuid());
     std::unordered_set<int> seen;
+    // Reaped-children ticks gained since the last sample, and the processes
+    // that ended since then with their last seen totals.
+    std::unordered_map<int, uint64_t> reaped;
+    struct Ended { int pid, ppid; uint64_t total; };
+    std::vector<Ended> ended;
     snap.threads_total = 0;
 
     for (const auto& entry : list_dir(r_.proc)) {
@@ -89,6 +95,8 @@ void ProcessProvider::sample(Snapshot& snap, int cpus, const std::unordered_map<
 
         auto it = known_.find(p.key.pid);
         if (it != known_.end() && it->second.last.key.start_ticks != p.key.start_ticks) {
+            if (!it->second.last.kernel_thread)
+                ended.push_back({it->first, it->second.last.ppid, it->second.ticks + it->second.child_ticks});
             snap.exited.push_back(it->second.last);  // the pid was recycled
             known_.erase(it);
             it = known_.end();
@@ -127,7 +135,7 @@ void ProcessProvider::sample(Snapshot& snap, int cpus, const std::unordered_map<
                 if (p.started_epoch >= snap.wall - dt - 1) p.cpu = 100.0 * double(ticks) / machine_ticks;
             } else {
                 p.cpu = 100.0 * double(ticks - std::min(ticks, k.ticks)) / machine_ticks;
-                p.child_cpu = 100.0 * double(child_ticks - std::min(child_ticks, k.child_ticks)) / machine_ticks;
+                reaped[p.key.pid] = child_ticks - std::min(child_ticks, k.child_ticks);
             }
         }
 
@@ -171,11 +179,52 @@ void ProcessProvider::sample(Snapshot& snap, int cpus, const std::unordered_map<
             continue;
         }
         ProcessInfo gone = it->second.last;
+        if (!gone.kernel_thread) ended.push_back({it->first, gone.ppid, it->second.ticks + it->second.child_ticks});
         gone.cpu = 0;
         gone.state = "exited";
         snap.exited.push_back(std::move(gone));
         it = known_.erase(it);
     }
+
+    // When a child ends, its whole lifetime lands at once in the reaped-
+    // children time of the process that reaps it. What was seen while it ran
+    // was counted then, so its last seen total is taken off again; what is
+    // left is children that started and ended between two samples, and the
+    // last moments of those that ended. The reaper is the last seen parent,
+    // or, when that parent ended too, an ancestor further up the same line:
+    // the parent reaped it before ending, or the orphan was adopted by an
+    // older ancestor (systemd --user takes in orphans).
+    std::unordered_map<int, int> up;  // pid -> parent, built only when a parent ended too
+    auto take = [&](int pid, uint64_t& credit) {
+        auto r = reaped.find(pid);
+        if (r == reaped.end()) return;
+        uint64_t n = std::min(credit, r->second);
+        r->second -= n;
+        credit -= n;
+    };
+    // A parent read just before it reaped a child shows the jump one sample late.
+    for (auto [pid, credit] : carry_) take(pid, credit);
+    carry_.clear();
+    std::sort(ended.begin(), ended.end(), [](const Ended& a, const Ended& b) { return a.pid < b.pid; });
+    for (auto e : ended) {
+        if (seen.count(e.ppid)) {
+            take(e.ppid, e.total);
+            if (e.total) carry_[e.ppid] += e.total;
+            continue;
+        }
+        if (up.empty()) {
+            for (const auto& x : ended) up[x.pid] = x.ppid;
+            for (const auto& p : snap.procs) up[p.key.pid] = p.ppid;
+        }
+        for (int at = e.ppid, depth = 0; at > 0 && e.total && depth < 64; ++depth) {
+            if (seen.count(at)) take(at, e.total);
+            auto u = up.find(at);
+            if (u == up.end()) break;
+            at = u->second;
+        }
+    }
+    for (auto& p : snap.procs)
+        if (auto r = reaped.find(p.key.pid); r != reaped.end()) p.child_cpu = 100.0 * double(r->second) / machine_ticks;
     prev_t_ = now;
 }
 

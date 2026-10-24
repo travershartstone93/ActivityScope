@@ -80,10 +80,11 @@ void SensorProvider::sample(std::vector<Thermal>& thermals, PowerSample& p, doub
         p.battery_w = battery_.battery_w;
         p.battery_state = battery_.battery_state;
         p.battery_health = battery_.battery_health;
+        p.battery_minutes = battery_.battery_minutes;
     } else {
     const std::string ps = r_.sys + "/class/power_supply";
     p.on_ac = Reading<bool>::none("No mains adapter found");
-    p.battery_pct = p.battery_w = p.battery_health = Reading<double>::none("No battery found");
+    p.battery_pct = p.battery_w = p.battery_health = p.battery_minutes = Reading<double>::none("No battery found");
     for (const auto& s : list_dir(ps)) {
         const std::string base = ps + "/" + s;
         auto type = read_line(base + "/type").value_or("");
@@ -106,6 +107,25 @@ void SensorProvider::sample(std::vector<Thermal>& thermals, PowerSample& p, doub
             }
             if (full && design && *design > 0) p.battery_health = Reading<double>::of(100.0 * double(*full) / double(*design));
             else p.battery_health = Reading<double>::none("Not reported");
+            // Time left: what remains over the present draw (energy over power,
+            // or charge over current; the battery reports one pair or the other).
+            // Charging, the same arithmetic gives the time to full.
+            auto now_e = read_int(base + "/energy_now"), pow_e = read_int(base + "/power_now");
+            auto now_c = read_int(base + "/charge_now"), cur_c = read_int(base + "/current_now");
+            auto full_e = read_int(base + "/energy_full"), full_c = read_int(base + "/charge_full");
+            const bool charging = p.battery_state == "Charging";
+            double left = -1, rate = -1;
+            if (now_e && pow_e && *pow_e > 0) {
+                left = charging && full_e ? double(*full_e - *now_e) : double(*now_e);
+                rate = double(*pow_e);
+            } else if (now_c && cur_c && *cur_c > 0) {
+                left = charging && full_c ? double(*full_c - *now_c) : double(*now_c);
+                rate = double(*cur_c);
+            }
+            if (left >= 0 && rate > 0 && (charging || p.battery_state == "Discharging"))
+                p.battery_minutes = Reading<double>::of(60.0 * left / rate);
+            else
+                p.battery_minutes = Reading<double>::none("Not draining or charging");
         }
     }
     battery_ = p;

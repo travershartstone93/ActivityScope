@@ -1,0 +1,158 @@
+# What a process is, in one sentence. Four tab-separated columns:
+# pattern <TAB> category <TAB> explanation <TAB> source
+# The explanation is the predicate after "is": "kswapd0 is <explanation>".
+# Categories: kernel, system-service, desktop, app, browser, browser-child,
+# shell, cli-tool, devtool, runtime, user-built, test, unknown.
+# Patterns may use * globs; exact names beat globs; a later file beats this one.
+#
+# ---- kernel threads (never recorded in the program history) ----
+kswapd0	kernel	the kernel's memory reclaim thread; when it is busy the machine is short on free RAM and pages are moving to swap	hand
+kworker/*	kernel	a kernel worker thread doing deferred background work for drivers and filesystems	hand
+ksoftirqd/*	kernel	a kernel thread that finishes interrupt work when hardware interrupts arrive faster than they can be handled inline	hand
+migration/*	kernel	a kernel thread that moves running tasks between CPU cores	hand
+rcu_*	kernel	part of the kernel's read-copy-update machinery that reclaims memory after concurrent readers finish	hand
+irq/*	kernel	a kernel thread handling a specific hardware interrupt line	hand
+khugepaged	kernel	the kernel thread that merges small memory pages into huge pages	hand
+kcompactd*	kernel	the kernel thread that defragments memory so larger allocations can succeed	hand
+jbd2/*	kernel	the journal writer for an ext4 filesystem	hand
+btrfs-*	kernel	a btrfs filesystem worker thread	hand
+usb-storage	kernel	the kernel driver thread for a USB storage device	hand
+zswap-shrink	kernel	the kernel thread that shrinks the compressed swap cache	hand
+oom_reaper	kernel	the kernel thread that reclaims memory from a process the out-of-memory killer chose	hand
+# ---- systemd and friends ----
+systemd	system-service	the init system: it starts, supervises and stops every service on the machine	hand
+(udev-worker)	system-service	a systemd-udevd worker applying device rules when hardware appears, changes or vanishes	hand
+(sd-*	system-service	a short-lived systemd helper fork (closing file descriptors, running a PAM session and similar chores)	hand
+systemd-journal	system-service	the system log collector; every service's output flows through it	hand
+systemd-udevd	system-service	the device manager: it reacts to hardware being plugged in or removed	hand
+systemd-oomd	system-service	the userspace out-of-memory guard; it kills memory hogs before the whole machine stalls	hand
+systemd-timesyn	system-service	the clock synchronizer keeping system time right over the network	hand
+systemd-logind	system-service	the login manager tracking seats, sessions, lid switches and power keys	hand
+systemd-userwor	system-service	a per-user systemd worker handling user service requests	hand
+dbus-broker	system-service	the message bus that desktop programs and services use to talk to each other	hand
+dbus-daemon	system-service	the message bus that desktop programs and services use to talk to each other	hand
+polkitd	system-service	the authorization service that decides which users may perform privileged actions	hand
+NetworkManager	system-service	the network service managing wifi and wired connections	hand
+wpa_supplicant	system-service	the wifi authentication service that negotiates with access points	hand
+bluetoothd	system-service	the bluetooth service managing paired devices	hand
+cupsd	system-service	the printing service	hand
+snapperd	system-service	the filesystem snapshot service; it takes and prunes btrfs snapshots	hand
+packagekitd	system-service	a software-management service that desktop tools use to query and install packages	hand
+fwupd	system-service	the firmware update service	hand
+upowerd	system-service	the power service tracking battery charge and AC state	hand
+udisksd	system-service	the disk management service desktop file managers use to mount drives	hand
+rtkit-daemon	system-service	the service that grants audio threads realtime priority	hand
+accounts-daemon	system-service	the service that manages user account information for the desktop	hand
+geoclue	system-service	the location service	hand
+# ---- KDE desktop ----
+plasmashell	desktop	the KDE Plasma desktop shell: the taskbar and other panels; the wallpaper and the desktop widgets	hand
+kwin_wayland	desktop	the KDE window manager and compositor; every window is drawn through it	hand
+kwin_x11	desktop	the KDE window manager and compositor for X11 sessions	hand
+konsole	desktop	the KDE terminal emulator	hand
+dolphin	desktop	the KDE file manager	hand
+kded6	desktop	the KDE background service host for clipboard, network and hotkey helpers	hand
+krunner	desktop	the KDE launcher opened with alt-space	hand
+plasma-*	desktop	a KDE Plasma desktop helper	hand
+kscreenlocker_g	desktop	the KDE lock screen	hand
+ksmserver	desktop	the KDE session manager	hand
+kglobalacceld	desktop	the KDE global keyboard shortcut service	hand
+kactivitymanage	desktop	the KDE activities tracker	hand
+kio*	desktop	a KDE input-output worker fetching files or thumbnails for desktop apps	hand
+xdg-desktop-por	desktop	the sandbox bridge that lets portable apps open files and screens safely	hand
+pipewire	desktop	the audio and video routing service	hand
+pipewire-pulse	desktop	the compatibility layer giving older audio programs a PulseAudio interface	hand
+wireplumber	desktop	the session manager for the pipewire audio service	hand
+sddm	desktop	the login screen	hand
+sddm-helper	desktop	the login screen's session starter	hand
+# ---- browsers and their children ----
+firefox	browser	the Firefox web browser's main process	hand
+Web Content	browser-child	a Firefox child process that renders web pages; one busy copy usually means one heavy tab	hand
+Isolated Web Co	browser-child	a Firefox child process rendering one website in isolation; one busy copy usually means one heavy tab	hand
+Privileged Cont	browser-child	a Firefox child process for Firefox's own privileged pages	hand
+RDD Process	browser-child	the Firefox child process that decodes video and audio	hand
+Socket Process	browser-child	the Firefox child process that handles networking	hand
+Utility Process	browser-child	a Firefox child process for miscellaneous sandboxed work	hand
+WebExtensions	browser-child	the Firefox child process running browser extensions	hand
+Chroot Helper	browser-child	a Firefox sandbox setup helper	hand
+forkserver	browser-child	Firefox's fork server, which spawns content processes cheaply	hand
+chromium	browser	the Chromium web browser	hand
+chrome	browser	the Chrome web browser	hand
+# ---- shells and terminals ----
+bash	shell	the bash command shell	hand
+zsh	shell	the zsh command shell	hand
+fish	shell	the fish command shell	hand
+sh	shell	the plain POSIX command shell	hand
+gnome-terminal	app	the GNOME terminal emulator	hand
+alacritty	app	a GPU-accelerated terminal emulator	hand
+kitty	app	a GPU-accelerated terminal emulator	hand
+foot	app	a lightweight Wayland terminal emulator	hand
+tmux*	cli-tool	the terminal multiplexer; it keeps shell sessions alive across disconnects	hand
+# ---- runtimes and interpreters ----
+python3*	runtime	the Python interpreter; the real work is whatever script it is running	hand
+python	runtime	the Python interpreter; the real work is whatever script it is running	hand
+node	runtime	the Node.js JavaScript runtime; the real work is whatever script it is running	hand
+node-MainThread	runtime	the Node.js runtime's main thread; the real work is whatever script it is running	hand
+java	runtime	the Java virtual machine; the real work is whatever program it is running	hand
+electron*	runtime	the Electron app runtime, a bundled browser running a desktop app	hand
+wine*	runtime	the Windows compatibility layer running a Windows program	hand
+# ---- tools seen on this kind of machine ----
+claude	devtool	the Claude Code command-line coding agent	hand
+2.1.*	devtool	the Claude Code command-line coding agent (its binary is named after its version)	hand
+ollama	app	the local language-model server managing models on this machine	hand
+llama-server	app	the llama.cpp inference engine, usually started by ollama to run a model on the GPU	hand
+piper	app	the Piper neural text-to-speech engine	hand
+ssh	cli-tool	the secure shell client for logging into other machines	hand
+sshd	system-service	the secure shell server accepting logins to this machine	hand
+rsync	cli-tool	the file synchronizer	hand
+git	devtool	the version control tool	hand
+make	devtool	the build tool	hand
+cmake	devtool	the build configuration tool	hand
+ninja	devtool	a fast build runner	hand
+gcc	devtool	the GNU C and C++ compiler	hand
+g++	devtool	the GNU C++ compiler	hand
+cc1*	devtool	the GNU compiler's internal code generator	hand
+lto1*	devtool	the GNU compiler's link-time optimizer	hand
+ld	devtool	the linker joining compiled pieces into a program	hand
+clang*	devtool	the LLVM C and C++ compiler	hand
+rustc	devtool	the Rust compiler	hand
+cargo	devtool	the Rust build tool	hand
+pacman	cli-tool	the Arch package manager	hand
+paru	cli-tool	an AUR helper building community packages	hand
+makepkg	cli-tool	the Arch package build tool	hand
+updatedb	cli-tool	the file-name index refresher behind the locate command; it scans the whole disk	hand
+ffmpeg	cli-tool	the media converter	hand
+curl	cli-tool	the network download tool	hand
+wget	cli-tool	the network download tool	hand
+tar	cli-tool	the archive tool	hand
+7z	cli-tool	the 7-Zip archive tool	hand
+journalctl	cli-tool	the system log reader	hand
+htop	cli-tool	an interactive process viewer	hand
+btop	cli-tool	an interactive resource monitor	hand
+sensors	cli-tool	the hardware temperature reader	hand
+blender	app	the 3D modelling and rendering studio	hand
+gimp	app	the image editor	hand
+vlc	app	the media player	hand
+mpv	app	a lightweight media player	hand
+audacity	app	the audio editor	hand
+obs	app	the screen recorder and streaming studio	hand
+steam	app	the Steam game platform	hand
+ktorrent	app	the KDE bittorrent client	hand
+libreoffice	app	the office suite	hand
+okular	app	the KDE document viewer	hand
+gwenview	app	the KDE image viewer	hand
+spectacle	app	the KDE screenshot tool	hand
+ark	app	the KDE archive manager	hand
+kate	app	the KDE text editor	hand
+conky	app	the desktop system monitor overlay	hand
+activityscope	app	this recorder: it samples the machine every second and writes the history these answers come from	hand
+ask	app	this question tool, answering from the ActivityScope records	hand
+weird	app	the thatsweird process anomaly scanner	hand
+hindsight	app	the configuration time machine bundled with ActivityScope	hand
+ollama-warm	system-service	the boot task that preloads the local language model	hand
+# ---- path rules (matched against the executable path) ----
+/tmp/*	test	a throwaway binary run from the temporary folder, usually a test fixture	hand
+/usr/local/*	user-built	a manually installed program, not from any package	hand
+*/build/*	user-built	a binary built from source in one of your own project folders	hand
+*/.local/share/claude/versions/*	devtool	the Claude Code command-line coding agent	hand
+*/ms-playwright/*	test	a browser bundled by Playwright for automated testing	hand
+*/.cache/*	app	a program run from a cache folder, usually fetched by another tool	hand

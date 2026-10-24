@@ -16,8 +16,22 @@ struct StoredSample {
     double t = 0, cpu = 0, kernel = 0, mem_pct = 0, swap_used = 0, pressure = 0;
     double disk_r = 0, disk_w = 0, net_rx = 0, net_tx = 0, gpu = -1, gpu_mem = -1;
     double temp = -1, fan = -1, power = -1, freq = -1, guard = -1, guard_limit = -1;
+    double battery_pct = -1, on_ac = -1, disk_free_pct = -1;
+    double swap_total = -1;  // bytes of swap, 0 for none; -1 not recorded (rows from before it was kept)
     int procs = 0;
     std::string cores;  // comma-separated per-core percentages
+};
+
+// One metric's hour, kept long after the raw seconds are pruned. The judge
+// handlers compare like with like: window medians against window medians.
+struct HourlyRow {
+    int64_t hour_ts = 0;  // start of the hour, unix seconds
+    std::string metric;
+    int64_t n = 0;        // valid samples behind the stats
+    double med = 0, p05 = 0, p95 = 0, max = 0;
+    double min = -1;               // -1: rolled up before the lowest value was kept
+    int64_t dropouts = 0;          // sentinel readings filtered out, counted
+    double on_battery_frac = -1;   // share of the hour spent on battery; -1 unknown
 };
 
 struct EventRow {
@@ -42,8 +56,11 @@ public:
     int64_t add_event(const Event& e);
     void flush();   // writes queued samples in one transaction
     void prune(double now, double detail_hours = 24, double event_days = 30);
+    // Folds completed hours of samples into samples_hourly; call before prune.
+    void rollup_hours(double now);
 
     std::vector<StoredSample> samples(double from, double to) const;
+    std::vector<HourlyRow> hourly(const std::string& metric, double from, double to) const;
     std::vector<EventRow> events(double from, double to) const;
     Event event(int64_t id) const;
     std::vector<Culprit> minute_top(double from, double to) const;

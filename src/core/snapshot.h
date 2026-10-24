@@ -36,6 +36,7 @@ struct MemorySample {
     uint64_t swap_total = 0, swap_free = 0;
     uint64_t committed = 0, commit_limit = 0;
     uint64_t zram_orig = 0, zram_compr = 0;  // compressed swap in RAM
+    uint64_t zram_swap = 0;                  // the swap space on zram devices (/proc/swaps), bytes
     Reading<double> pressure_some10;         // % of time some task waited on memory
     Reading<double> pressure_full10;
     uint64_t page_ins = 0, page_outs = 0;
@@ -100,6 +101,7 @@ struct PowerSample {
     Reading<double> battery_w;       // positive while discharging
     std::string battery_state;
     Reading<double> battery_health;  // full charge vs design, percent
+    Reading<double> battery_minutes; // left at this draw, or to full while charging
     Reading<double> cpu_package_w;
     std::string profile;             // platform power profile
     std::vector<FanSample> fans;
@@ -155,6 +157,7 @@ struct Snapshot {
     std::vector<Thermal> thermals;
     PowerSample power;
     GuardSample guard;
+    Reading<double> root_free_pct;   // free space on /, percent
     std::vector<ProcessInfo> procs;
     std::vector<ProcessInfo> exited;  // gone since the last sample, with final totals
     std::vector<UnitSample> units;

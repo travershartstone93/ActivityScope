@@ -1,0 +1,65 @@
+# The held-out exam: questions kept apart from tuning. Only the total score
+# is looked at (versus_general.py --quiet), never the individual answers, so a
+# rising score here shows that fixes made against questions.tsv generalize.
+# Same columns and rules as questions.tsv.
+id	category	question	expect
+hs01	science	what is the chemical symbol for iron	\bFe\b
+hs02	science	what is the largest moon of saturn	titan
+hs03	science	how many legs does a spider have	\beight\b|\b8\b
+hs04	science	what is the main gas in the earth's atmosphere	nitrogen
+hs05	science	which planet is known as the red planet	mars
+hs06	science	who proposed the theory of evolution by natural selection	darwin|wallace
+hs07	science	what is the speed of sound	\b34[0-3]\b|1,?235|\b767\b
+hs08	science	what is the hottest planet in the solar system	venus
+hs09	science	what is the atomic number of carbon	\b6\b|\bsix\b
+hs10	science	what organ pumps blood through the body	heart
+hg01	geography	what is the capital of norway	oslo
+hg02	geography	what is the capital of argentina	buenos aires
+hg03	geography	what is the capital of south korea	seoul
+hg04	geography	what is the longest river in europe	volga
+hg05	geography	what is the largest lake in africa	victoria
+hg06	geography	what is the highest waterfall in the world	angel
+hg07	geography	what is the currency of switzerland	franc
+hg08	geography	which ocean lies between europe and north america	atlantic
+hg09	geography	what country is machu picchu in	peru
+hg10	geography	what is the largest island in the world	greenland
+hh01	history	when did the american civil war end	1865
+hh02	history	who was the first emperor of rome	augustus
+hh03	history	when did christopher columbus die	1506
+hh04	history	who was the first woman to win a nobel prize	curie
+hh05	history	when did the soviet union collapse	1991
+hh06	history	who wrote the communist manifesto	marx|engels
+hh07	history	when was the magna carta signed	1215
+hh08	history	who was the first prime minister of india	nehru
+hh09	history	when did the great fire of london happen	1666
+hh10	history	who discovered the planet uranus	herschel
+hp01	people	who wrote war and peace	tolstoy
+hp02	people	who painted the last supper	leonardo|da vinci
+hp03	people	who composed the four seasons	vivaldi
+hp04	people	who wrote on the origin of species	darwin
+hp05	people	who directed the film jaws	spielberg
+hp06	people	who wrote don quixote	cervantes
+hp07	people	who sculpted the statue of david	michelangelo|donatello
+hp08	people	who invented the world wide web	berners
+hd01	words	what does gregarious mean	sociable|company|group|herd|flock
+hd02	words	what does ominous mean	threat|menac|forebod|evil|bad
+hd03	words	what does pragmatic mean	practical
+hd04	words	what does lucid mean	clear|rational|understood|bright
+hd05	words	what is an adverb	modif|verb|describ
+hd06	words	what does tenacious mean	persist|determin|firm|grip|hold
+hd07	words	what does verbatim mean	exact|word for word
+hd08	words	what does arduous mean	difficult|hard|strenuous|laborious
+hw01	howto	how do i fold a fitted sheet	corner|fold|tuck
+hw02	howto	how do i remove rust from metal	vinegar|baking soda|lemon|steel wool|sand|wire brush
+hw03	howto	how do i change the default shell in linux	chsh
+hw04	howto	how do i check my ubuntu version	lsb_release|os-release|hostnamectl
+hw05	howto	how do i get rid of fruit flies	vinegar|trap|cider
+hw06	howto	how do i tune a guitar	tuner|string|pitch|fret
+hc01	calc	what is 20% of 150	\b30\b
+hc02	calc	convert 10 miles to km	16\.09|16\.1
+hc03	calc	what is 7 times 8	\b56\b
+hc04	calc	how many hours are in a week	\b168\b
+hc05	calc	what is 2 cubed	\b8\b
+hl01	limits	what is the score of the game right now	couldn't|could not|can't|cannot|don't|do not|no access|real-time|not able|unable|never go online
+hl02	limits	what is my favorite food	couldn't|could not|can't|cannot|don't|do not|no way|not able|unable
+hl03	limits	write a song about love	don't write|couldn't|can't|cannot

@@ -39,4 +39,10 @@ struct BootEndInfo {
 };
 BootEndInfo classify_boot_end(const std::string& last_lines);
 
+class Store;
+struct Event;
+// The event for a boot that ended without a clean shutdown: info from its log's last lines, end its log's last
+// entry, next_start the next boot's first; the readings and busiest programs from the store.
+Event shutdown_event(const Store& store, const BootEndInfo& info, double end, double next_start);
+
 }  // namespace as

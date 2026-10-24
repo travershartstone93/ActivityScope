@@ -40,4 +40,5 @@ private:
     std::set<int> collapsedSections_;
     double lastApply_ = 0;
     uint64_t lastGen_ = 0;
+    int sortCol_ = 4;  // ProcessModel::Cpu: the column the list is sorted by, to tell a first click from a flip
 };

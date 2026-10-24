@@ -257,22 +257,11 @@ void LogWatch::pacman(std::vector<LogEntry>& out) {
     if (offset == st.st_size) return;
     std::ifstream in(path);
     in.seekg(offset);
-    std::string line;
-    PacmanParser parser;
     const double keep_from = double(time(nullptr)) - 90 * 86400;
-    long long pos = offset;
-    long long last_complete = offset;
-    while (std::getline(in, line)) {
-        pos += static_cast<long long>(line.size()) + 1;
-        if (auto e = parser.feed(line)) {
-            if (e->t >= keep_from) out.push_back(*e);
-            last_complete = pos;
-        }
-        if (line.find("[ALPM] transaction") == std::string::npos && line.find("[ALPM]") == std::string::npos) last_complete = std::max(last_complete, pos);
-    }
-    // Resume after the last finished transaction, so one still being written
-    // is read in full next time.
-    if (store_) store_->set_meta("pacman_offset", std::to_string(last_complete));
+    long long resume = offset;
+    for (auto& e : read_pacman(in, offset, &resume))
+        if (e.t >= keep_from) out.push_back(std::move(e));
+    if (store_) store_->set_meta("pacman_offset", std::to_string(resume));
 }
 
 void LogWatch::mounts(std::vector<LogEntry>& out, double now) {

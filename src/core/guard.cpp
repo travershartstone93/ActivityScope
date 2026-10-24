@@ -2,7 +2,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <ctime>
 #include <vector>
+
+#include "store.h"
 
 namespace as {
 
@@ -129,6 +133,100 @@ BootEndInfo classify_boot_end(const std::string& last_lines) {
     }
     info.kind = BootEnd::Sudden;
     return info;
+}
+
+namespace {
+
+std::string clock_date(double t) {
+    time_t tt = time_t(t);
+    tm lt{};
+    localtime_r(&tt, &lt);
+    char buf[64];
+    std::strftime(buf, sizeof buf, "%a %b %e at %H:%M:%S", &lt);
+    return buf;
+}
+
+}  // namespace
+
+Event shutdown_event(const Store& store, const BootEndInfo& info, double end, double next_start) {
+    // The recorder's own last reading of that boot: its last one before the next boot began. The log can stop
+    // writing a minute before the recorder does, so the stop is the later of the two.
+    StoredSample last = store.last_sample_before(next_start);
+    const bool read = last.t > 0 && end - last.t < 120;
+    const double stop = read ? std::max(end, last.t) : end;
+    Event e;
+    e.start = e.end = e.last_active = stop;
+    e.kinds = KindShutdown | (info.kind == BootEnd::Thermal ? KindHeat : 0u);
+    e.primary = KindShutdown;
+    e.open = false;
+    if (!info.line.empty()) e.triggers.push_back(info.line.substr(info.line.find(' ') + 1));
+    std::string when = clock_date(stop);
+    std::string text;
+    if (info.kind == BootEnd::Thermal)
+        text = "The system shut itself down for heat on " + when + ": the kernel's shutdown sensor reached its critical temperature.";
+    else if (info.kind == BootEnd::Asleep)
+        text = "The machine went to sleep on " + when + " and never woke up; the battery may have run out.";
+    else
+        text = "The machine stopped without warning on " + when +
+               ". Nothing was written to the system log first, which is what happens when the laptop's own firmware cuts the power, "
+               "the battery dies, or the system freezes.";
+
+    if (read) {
+        char buf[256];
+        const std::string ago = last.t >= end ? "The recorder read on past the log's last entry (" + clock_time(end) + "); its last reading"
+                                              : "The last reading, " + std::to_string(int64_t(std::lround(end - last.t))) + " s before,";
+        if (last.guard >= 0 && last.guard_limit > 0) {
+            std::snprintf(buf, sizeof buf, " was %.0f °C on the shutdown sensor (%.0f °C below its %.0f °C limit), with the CPU %.0f%% busy.",
+                          last.guard, last.guard_limit - last.guard, last.guard_limit, last.cpu);
+            e.min_margin = std::max(0.0, last.guard_limit - last.guard);
+            e.guard_limit = last.guard_limit;
+        } else {
+            std::snprintf(buf, sizeof buf, " had the CPU at %.0f °C and %.0f%% busy.", last.temp, last.cpu);
+        }
+        text += " " + ago + buf;
+        double hottest = -1;  // the shutdown sensor at its closest to the limit
+        for (const auto& x : store.samples(stop - 120, stop + 1)) {
+            EventSample p;
+            p.t = x.t;
+            p.cpu = x.cpu;
+            p.mem_pct = x.mem_pct;
+            p.temp = x.temp;
+            p.fan = x.fan;
+            p.guard = x.guard;
+            e.samples.push_back(p);
+            e.peak_cpu = std::max(e.peak_cpu, x.cpu);
+            e.peak_temp = std::max(e.peak_temp, x.temp);
+            e.peak_fan = std::max(e.peak_fan, x.fan);
+            if (x.guard >= 0 && x.guard_limit > 0) {
+                double m = std::max(0.0, x.guard_limit - x.guard);
+                if (e.min_margin < 0 || m < e.min_margin) e.min_margin = m, hottest = x.guard;
+            }
+        }
+        // The last reading alone can be calm after a hot minute: the two minutes' worst is said too.
+        if (hottest > last.guard)
+            std::snprintf(buf, sizeof buf, " In its last two minutes the shutdown sensor reached %.0f °C (%.0f °C below its limit) and the CPU %.0f%% busy.",
+                          hottest, e.min_margin, e.peak_cpu);
+        else if (last.guard < 0 && e.peak_temp > last.temp)
+            std::snprintf(buf, sizeof buf, " In its last two minutes the CPU reached %.0f °C and %.0f%% busy.", e.peak_temp, e.peak_cpu);
+        else
+            buf[0] = 0;
+        text += buf;
+        auto top = store.minute_top(stop - 120, stop + 1);
+        double total = 0;
+        for (const auto& c : top) total += c.cpu_seconds;
+        for (auto& c : top) c.share = total > 0 ? c.cpu_seconds / total : 0;
+        if (top.size() > 8) top.resize(8);
+        if (!top.empty() && top.front().share >= 0.2) {
+            std::snprintf(buf, sizeof buf, " The busiest program in its last two minutes was %s (%.0f%% of the CPU time).", top.front().name.c_str(),
+                          top.front().share * 100);
+            text += buf;
+        }
+        e.culprits = std::move(top);
+    } else {
+        text += " ActivityScope was not recording then, so there are no readings from just before.";
+    }
+    e.summary = std::string(clock_time(stop)) + " to " + clock_time(stop) + " (1 s). " + text;
+    return e;
 }
 
 }  // namespace as

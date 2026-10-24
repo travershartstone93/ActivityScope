@@ -7,7 +7,8 @@ namespace as {
 class Sampler {
 public:
     explicit Sampler(Roots r = {});
-    SnapshotPtr sample();
+    // processes: scan the processes now, not only when due (every 3 s while the machine is calm).
+    SnapshotPtr sample(bool processes = false);
 
 private:
     Roots r_;
@@ -24,6 +25,8 @@ private:
     SnapshotPtr last_;
     double last_proc_scan_ = -1e9;
     double last_units_ = -1e9;
+    double last_statvfs_ = -1e9;
+    Reading<double> root_free_ = Reading<double>::none("not read yet");
 };
 
 double monotonic_seconds();

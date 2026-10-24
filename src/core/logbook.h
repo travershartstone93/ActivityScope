@@ -1,4 +1,5 @@
 #pragma once
+#include <iosfwd>
 #include <optional>
 #include <string>
 #include <vector>
@@ -32,6 +33,8 @@ class PacmanParser {
 public:
     // Feed one line; returns an entry when a transaction completes.
     std::optional<LogEntry> feed(const std::string& line);
+    // No transaction open and no command waiting for one: a read may stop here and lose nothing.
+    bool idle() const { return !open_ && command_.empty(); }
 
 private:
     double t_ = 0;
@@ -40,6 +43,10 @@ private:
     bool open_ = false;
 };
 double parse_pacman_time(const std::string& line);
+
+// pacman.log read from the byte offset the stream stands at: the transactions completed in what was read, and in
+// resume the offset the next read should begin at.
+std::vector<LogEntry> read_pacman(std::istream& in, long long offset, long long* resume);
 
 // Flashing, imaging and disk tools worth logging when they run.
 struct ToolUse {

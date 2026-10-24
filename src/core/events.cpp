@@ -418,10 +418,13 @@ Event EventEngine::finish(bool final_close) {
     std::vector<Culprit> unseen_list;
     std::map<std::pair<int, uint64_t>, double> extra;
     {
-        // A process's reaped-children time includes everything its exited
-        // descendants used. Walking deepest-first, each process reports the
-        // part of its children's time we never saw by name, then hands its
-        // own total up to its parent, so nothing is counted twice.
+        // The recorder already takes a seen child's time off its parent's
+        // reaped-children time, so what is left there was never seen by
+        // name: children that started and ended between two samples, and the
+        // last moments of children that ended. Walking deepest-first, each
+        // process learns how much its exited children used; a small leftover
+        // next to busy exited children is their last moments and goes to the
+        // busiest of them, anything else is reported as unseen.
         std::unordered_map<int, const Culprit*> latest;
         for (const auto& [k, a] : acc_) {
             auto it = latest.find(a.c.pid);
@@ -450,7 +453,7 @@ Event EventEngine::finish(bool final_close) {
                 if (!best || x.owner_cpu > best->owner_cpu) best = &x;
             }
             seen_child_cpu[c->pid] = seen;
-            double unseen = c->child_cpu_seconds - seen;
+            double unseen = c->child_cpu_seconds;
             if (unseen >= 0.5 && best && seen >= 1 && unseen <= 0.35 * seen) {
                 // The last moments of busy children that exited between samples.
                 extra[best->owner] += unseen;
@@ -469,7 +472,7 @@ Event EventEngine::finish(bool final_close) {
                 unseen_list.push_back(std::move(u));
             }
             if (c->exited) {
-                Contribution mine{c->cpu_seconds + std::max(c->child_cpu_seconds, seen), {c->pid, c->start_ticks}, c->cpu_seconds};
+                Contribution mine{c->cpu_seconds + c->child_cpu_seconds + seen, {c->pid, c->start_ticks}, c->cpu_seconds};
                 if (best && best->owner_cpu > c->cpu_seconds) {
                     mine.owner = best->owner;
                     mine.owner_cpu = best->owner_cpu;

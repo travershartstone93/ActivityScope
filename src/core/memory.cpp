@@ -45,6 +45,17 @@ void MemoryProvider::sample(MemorySample& m) {
         }
     }
 
+    // "/dev/zram0  partition  8089084  8004652  100": the size column is in kB.
+    if (auto sw = read_file(r_.proc + "/swaps")) {
+        for (const auto& line : split(*sw, '\n')) {
+            auto f = split_ws(line);
+            if (f.size() < 3) continue;
+            const auto slash = f[0].rfind('/');
+            if (starts_with(slash == std::string::npos ? f[0] : f[0].substr(slash + 1), "zram"))
+                m.zram_swap += to_uint(f[2]).value_or(0) * 1024;
+        }
+    }
+
     for (const auto& b : list_dir(r_.sys + "/block")) {
         if (!starts_with(b, "zram")) continue;
         if (auto mm = read_line(r_.sys + "/block/" + b + "/mm_stat")) {
