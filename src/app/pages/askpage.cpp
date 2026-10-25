@@ -116,8 +116,11 @@ void AskPage::go() {
         QString kindsDir = exe + "/../share/activityscope/kinds";
         if (!QFileInfo::exists(kindsDir + "/kinds.tsv")) kindsDir = exe + "/../data/kinds";
         QDir().mkpath(QString::fromStdString(dbdir) + "/kinds");
-        ask_->load_kinds(kindsDir.toStdString(), dbdir + "/kinds",
-                         QDir::homePath().toStdString() + "/.local/share/unllm/models/bge-small-en-v1.5");
+        // The matcher's model: the fine-tuned copy when installed, else bge-small; bge-small does general meaning.
+        const std::string models = QDir::homePath().toStdString() + "/.local/share/unllm/models/";
+        const bool tuned = QFileInfo::exists(QString::fromStdString(models + "bge-small-tuned/model.onnx"));
+        ask_->load_kinds(kindsDir.toStdString(), dbdir + "/kinds", models + (tuned ? "bge-small-tuned" : "bge-small-en-v1.5"),
+                         models + "bge-small-en-v1.5");
         // The final check (askcore.h), as the CLI sets it; ASK_CHECK=off turns it off.
         ask_->set_checker(qEnvironmentVariableIsSet("ASK_CHECK") ? qEnvironmentVariable("ASK_CHECK").toStdString()
                                                                  : std::string("off"));

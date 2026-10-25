@@ -1,6 +1,9 @@
 #pragma once
 #include <cstdint>
 #include <memory>
+#include <unistd.h>
+
+#include "unllm/meaning.h"
 #include <optional>
 #include <set>
 #include <string>
@@ -82,9 +85,20 @@ public:
     // The catalogue of question kinds (kinds.h): its matcher names the topic
     // of a question by its nearest example phrasing, in place of the word
     // lists (measured 2026-10-22: topic right 77 of 85 against 22).
-    bool load_kinds(const std::string& dir, const std::string& cache, const std::string& model_dir) {
+    // The matcher's model (model_dir, which may be a copy of bge-small fine-tuned on the catalogue) and the model for
+    // general meaning (names.h, the yes/no examples, event placement, state leads): the untouched bge-small, found
+    // beside the matcher's folder when meaning_dir is not given, else the matcher's own. The general model keeps its
+    // own index of the catalogue (place_): an event clause ("when it cut out on monday night") is a fragment, and
+    // the record sets it could be an event of are read off that index, where the tuned matcher's sharper spacing
+    // would leave too few kinds above the cut-off.
+    bool load_kinds(const std::string& dir, const std::string& cache, const std::string& model_dir, std::string meaning_dir = "") {
         const bool ok = kinds_.load(dir, cache, model_dir);
-        names_.set_model(kinds_.model());  // everyday words to programs (names.h), by the same model
+        if (meaning_dir.empty()) {
+            const std::string beside = model_dir.substr(0, model_dir.rfind('/') + 1) + "bge-small-en-v1.5";
+            meaning_dir = model_dir.rfind("bge-small-en-v1.5") == std::string::npos && access((beside + "/model.onnx").c_str(), R_OK) == 0 ? beside : model_dir;
+        }
+        if (meaning_dir != model_dir) place_.load(dir, cache, meaning_dir);  // else one model does both
+        names_.set_model(meaning());  // everyday words to programs (names.h), by the general model
         names_.set_cache(cache + "/names.vec");
         scan_cache_ = cache + "/space-scan.tsv";  // the last home-folder scan, reused for a few minutes
         return ok;
@@ -164,6 +178,11 @@ private:
     std::size_t receipt_offset_ = 0;  // "tell me more": skip what was already shown
     std::string kind_;                // the catalogue kind the current question matched
     std::string scan_cache_;          // where the last home-folder scan is kept
+    Kinds place_;                     // the catalogue in the general model's space, when that is not the matcher's
+    // The model for general meaning: the untouched one when loaded, else the matcher's; the index an event clause
+    // is placed through, likewise.
+    const unllm::Meaning* meaning() const { return place_.ready() ? place_.model() : kinds_.model(); }
+    const Kinds& placer() const { return place_.ready() ? place_ : kinds_; }
     Facts facts_;
     unllm::Index index_;
     std::string miss_log_;

@@ -54,6 +54,10 @@ public:
     bool phrased(const std::string& kind, const std::string& word) const;
     // The sentence model the matcher loaded, for other matching by meaning (names.h); null when not loaded.
     const unllm::Meaning* model() const;
+    // A cut-off on this model's scores ("understand", "doubt", "unplaced_topic", "records", "band", "two_questions"):
+    // the value the model's embed.json gives under "cutoffs", else the default, which is the untouched bge-small's.
+    // A model's cut-offs are calibrated with it (bench/hyp/embed/calibrate.py) and travel with it, not with the code.
+    float cutoff(const std::string& name, float dflt) const;
     // The plain name words.tsv gives a topic or a form ("slow": "CPU load and slowness"); the value itself when it has
     // none. what is "topic" or "form".
     std::string plain(const std::string& what, const std::string& value) const;

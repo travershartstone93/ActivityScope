@@ -5965,3 +5965,463 @@ identity.disk	what filesystem is mounted at /
 identity.disk	what filesystem is / on
 identity.disk	is the root filesystem ext4 or btrfs
 identity.disk	what type of filesystem does the drive use
+slow.above.value.window	how much time did the processor spend over 90 percent yesterday
+slow.above.value.window	how many minutes was the processor maxed out yesterday
+slow.above.value.window	total time the cpu was over 75 percent this week
+slow.above.value.window	how long did the processor run flat out today
+slow.above.value.window	time spent above 80 percent cpu since monday
+slow.above.value.window	how long was the cpu busy over 70% on saturday
+slow.above.value.window	how many minutes above 90% cpu in the last hour
+slow.above.value.window	how much time over 50% cpu this evening
+slow.above.value.window	how long was the processor under heavy load today
+slow.above.value.window	minutes the cpu spent above 85 percent on tuesday
+slow.above.value.window	for how long was cpu load high last night
+slow.above.value.window	how long was the cpu over the busy line this week
+slow.above.value.window	how much time did the cpu run above 90 percent on thursday
+slow.above.value.window	how long was the processor above three quarters load today
+slow.procs.value.window	how many processes are running
+slow.procs.value.window	how many programs are running at the moment
+slow.procs.value.window	how many processes were there at noon
+slow.procs.value.window	how many things are running on this laptop right now
+slow.procs.value.window	what is the process count right now
+slow.procs.value.window	how many programs were running yesterday evening
+slow.procs.value.window	how many processes does the system have open now
+slow.procs.value.window	how many tasks are running at the moment
+slow.procs.value.window	number of running processes right now
+slow.procs.value.window	how many processes were running at 3pm
+slow.procs.value.window	how many programs are open on the machine
+slow.procs.value.window	how many processes were alive last night
+slow.procs.value.window	how many separate programs are running now
+slow.procs.value.window	how many processes ran during the build this morning
+slow.procs.value.window	how many processes were running when it slowed down
+slow.procs.value.window	how big is the process list right now
+slow.procs.value.window	how many running processes did it have at lunch
+slow.procs.value.window	how many programs are active right now
+slow.procs.value.window	count the running processes
+slow.procs.value.window	how many processes were running on tuesday afternoon
+slow.procs.value.window	process count this morning
+slow.procs.value.window	how many things were running at midnight
+network.new.list.window	what new program went online this week
+network.new.list.window	anything connect out for the first time last night
+network.new.list.window	what new connections appeared today
+network.new.list.window	which programs went online that never had before
+network.new.list.window	did any program make its first connection yesterday
+network.new.list.window	first time network connections this week
+network.new.list.window	what started talking to the internet for the first time
+network.new.list.window	which program connected somewhere new today
+network.new.list.window	new network connections since monday
+network.new.list.window	which apps connected to new addresses today
+network.new.list.window	any program reaching out for the first time this morning
+network.new.list.window	what connected to a new place last night
+network.new.list.window	which programs contacted new servers this week
+network.new.list.window	did anything new go online over the weekend
+network.new.list.window	programs online for the first time today
+network.new.list.window	what made its first network connection this afternoon
+network.new.list.window	which program first used the network today
+network.new.list.window	any new outbound connections yesterday
+network.new.list.window	what new things reached the internet since friday
+network.new.list.window	first connections on record this week
+network.site.none	how much data did netflix use
+network.site.none	which sites used the most data this week
+network.site.none	how much did youtube download today
+network.site.none	bandwidth per website this month
+network.site.none	what site is eating my data
+network.site.none	data used by each website yesterday
+network.site.none	how much did spotify stream today in megabytes
+network.site.none	which domain used the most data
+network.site.none	what websites used the most network this week
+network.site.none	how many gigabytes did reddit use
+network.site.none	traffic by website last night
+network.site.none	which site downloaded the most last week
+network.site.none	how much data per site today
+network.site.none	what web pages used my bandwidth
+network.site.none	data usage by domain this month
+network.site.none	how much did twitch use yesterday
+network.site.none	which website uploaded the most
+network.site.none	bandwidth used per page this week
+network.site.none	how much data did facebook use today
+trust.admin.list.window	what commands did i run as administrator today
+trust.admin.list.window	which commands ran as root yesterday
+trust.admin.list.window	what did i sudo last night
+trust.admin.list.window	show my sudo history for this week
+trust.admin.list.window	what administrator commands were run on monday
+trust.admin.list.window	did i run anything as root today
+trust.admin.list.window	which sudo commands were refused
+trust.admin.list.window	what did i run with elevated rights yesterday
+trust.admin.list.window	list the admin commands from this morning
+trust.admin.list.window	what root commands ran this week
+trust.admin.list.window	which commands needed a password this week
+trust.admin.list.window	sudo commands since monday
+trust.admin.list.window	was anything run as root last night
+trust.admin.list.window	which privileged commands ran today
+trust.admin.list.window	admin commands run this afternoon
+trust.admin.list.window	what did i run through pkexec this week
+trust.admin.list.window	what was run as administrator while i was away
+trust.admin.list.window	which sudo commands failed
+trust.admin.list.window	root level commands yesterday
+battery.sleep.list.window	list the times it went to sleep this week
+battery.sleep.list.window	when did it suspend last night
+battery.sleep.list.window	what times did it sleep on tuesday
+battery.sleep.list.window	when was the machine asleep yesterday
+battery.sleep.list.window	list every sleep since monday
+battery.sleep.list.window	when did it go to sleep and wake up today
+battery.sleep.list.window	did it sleep while i was out this afternoon
+battery.sleep.list.window	show me the sleeps from last night
+battery.sleep.list.window	when did the laptop suspend this week
+battery.sleep.list.window	was the machine asleep during the meeting
+battery.sleep.list.window	did it suspend overnight
+battery.sleep.list.window	when did it nap today
+battery.sleep.list.window	when was it suspended on sunday
+battery.sleep.list.window	did it go to sleep during lunch
+battery.sleep.list.window	times the laptop slept this week
+battery.sleep.list.window	when did it sleep over the weekend
+battery.sleep.list.window	every sleep on wednesday
+battery.sleep.when.window	when did the laptop last wake up
+battery.sleep.when.window	what time did it wake this morning
+battery.sleep.when.window	when did it wake from suspend
+battery.sleep.when.window	when was the last sleep
+battery.sleep.when.window	when did it resume
+battery.sleep.when.window	when did the machine last suspend
+battery.sleep.when.window	what time did it come back from sleep
+battery.sleep.when.window	when did it last resume from suspend
+battery.sleep.when.window	when was it last asleep
+battery.sleep.when.window	latest wake up time
+battery.sleep.when.window	when did the laptop wake up on sunday
+battery.sleep.when.window	when did it go to sleep yesterday evening
+battery.sleep.when.window	what time did it last wake
+battery.sleep.when.window	when did the laptop last doze off
+battery.sleep.when.window	when did it last come out of suspend
+battery.sleep.when.window	when did the machine wake today
+battery.sleep.when.window	time of the last sleep
+battery.sleep.when.window	when did it last sleep and for how long
+battery.sleep.when.window	when was the most recent wake
+battery.sleep.when.window	what time did the laptop sleep on friday
+battery.sleep.often.window	how long did it sleep last night
+battery.sleep.often.window	total sleep time today
+battery.sleep.often.window	how often does it go to sleep
+battery.sleep.often.window	how many sleeps since monday
+battery.sleep.often.window	how long was it suspended over the weekend
+battery.sleep.often.window	how many times did the laptop suspend today
+battery.sleep.often.window	longest sleep this week
+battery.sleep.often.window	how long did the machine sleep on tuesday
+battery.sleep.often.window	how many hours was it asleep last night
+battery.sleep.often.window	how often did it suspend this afternoon
+battery.sleep.often.window	how long has it been asleep in total this week
+battery.sleep.often.window	count the sleeps yesterday
+battery.sleep.often.window	how much time asleep on saturday
+battery.sleep.often.window	how long did it doze this morning
+battery.sleep.often.window	how long was the longest sleep yesterday
+battery.sleep.often.window	how much of the week was the laptop asleep
+battery.sleep.often.window	time spent suspended this month
+battery.sleep.often.window	how many sleeps last night
+battery.charger.when.window	when did i last unplug it
+battery.charger.when.window	when did i unplug the laptop yesterday
+battery.charger.when.window	when did the charger go in last night
+battery.charger.when.window	when did i last disconnect the power
+battery.charger.when.window	what time did it get plugged in today
+battery.charger.when.window	when did i take it off charge
+battery.charger.when.window	when was the power cable last plugged in
+battery.charger.when.window	when did i last put it on charge
+battery.charger.when.window	latest time the charger was unplugged
+battery.charger.when.window	when did it last start charging
+battery.charger.when.window	what time was it plugged in on sunday
+battery.charger.when.window	when did it go on charge yesterday
+battery.charger.when.window	when was power last disconnected
+battery.charger.when.window	when did i last plug in the power lead
+battery.charger.when.window	when did i unplug it this morning
+battery.charger.when.window	when was the charger last pulled out
+battery.charger.list.window	list every time i unplugged the laptop this week
+battery.charger.list.window	times it was plugged in on monday
+battery.charger.list.window	how many times was it unplugged last night
+battery.charger.list.window	when was the charger plugged and unplugged this week
+battery.charger.list.window	charger history for today
+battery.charger.list.window	how many times did it go on charge yesterday
+battery.charger.list.window	list the charging sessions this week
+battery.charger.list.window	every time the power was connected today
+battery.charger.list.window	how many times did i take it off charge this week
+battery.charger.list.window	plug in and unplug times since friday
+battery.charger.list.window	how often did i plug it in on tuesday
+battery.charger.list.window	charging events yesterday
+battery.charger.list.window	how many charges did it get this week
+battery.charger.list.window	when was it on and off the charger today
+battery.charger.list.window	list when i connected power this month
+battery.charger.list.window	charger connections over the weekend
+battery.charger.list.window	how many times did it start charging this week
+battery.charger.list.window	all the plug ins since monday
+battery.charger.list.window	times the power lead went in and out today
+battery.lid.when.window	when did i last close the lid
+battery.lid.when.window	when did the lid last close
+battery.lid.when.window	when was the lid shut yesterday
+battery.lid.when.window	when did i last lift the lid
+battery.lid.when.window	what time did i close the lid
+battery.lid.when.window	when was the screen last closed
+battery.lid.when.window	when did i open it up today
+battery.lid.when.window	when did the lid go down last night
+battery.lid.when.window	when did i last fold the lid shut
+battery.lid.when.window	latest lid close
+battery.lid.when.window	when was the lid opened on sunday
+battery.lid.when.window	when did i last lift the laptop lid
+battery.lid.when.window	when did i shut the lid on friday
+battery.lid.when.window	when did the lid last go up
+battery.lid.when.window	when did i last close the screen
+battery.lid.when.window	when was the lid last closed
+battery.lid.when.window	when did i open the lid after lunch
+battery.lid.when.window	time i last shut the lid
+battery.lid.list.window	list every lid close since monday
+battery.lid.list.window	lid closes this week
+battery.lid.list.window	how many times did i open the lid today
+battery.lid.list.window	every time i shut the lid last night
+battery.lid.list.window	how often was the lid opened on tuesday
+battery.lid.list.window	count the lid closes today
+battery.lid.list.window	list the lid opens and closes yesterday
+battery.lid.list.window	how many times was the lid closed this month
+battery.lid.list.window	lid history for today
+battery.lid.list.window	how often did i shut the screen this week
+battery.lid.list.window	how many lid closes over the weekend
+battery.lid.list.window	how many times did i fold the lid shut yesterday
+battery.lid.list.window	every lid open since friday
+battery.lid.list.window	lid close count this week
+battery.lid.list.window	how many times did i close the lid today
+battery.lid.list.window	list when the lid was closed this week
+battery.lid.list.window	how often did the lid close on monday
+startup.login.when.window	when did i log in this morning
+startup.login.when.window	when did i sign in today
+startup.login.when.window	what time did i log into the laptop
+startup.login.when.window	when did i last sign out
+startup.login.when.window	when did i last start a desktop session
+startup.login.when.window	what time did i log in on monday
+startup.login.when.window	when did i log out last night
+startup.login.when.window	when did i last sign in to the desktop
+startup.login.when.window	what time was my first login today
+startup.login.when.window	when did the session start this morning
+startup.login.when.window	when was the last time i signed in
+startup.login.when.window	what time did i log on yesterday evening
+startup.login.when.window	when did my session begin today
+startup.login.when.window	when did i log back in after lunch
+startup.login.list.window	how many times did i log in today
+startup.login.list.window	how many logins since monday
+startup.login.list.window	every time i logged in this week
+startup.login.list.window	how many times did i sign in today
+startup.login.list.window	list the logouts this week
+startup.login.list.window	how many sessions did i start yesterday
+startup.login.list.window	login history for today
+startup.login.list.window	how many times did i log on this month
+startup.login.list.window	list each login and logout today
+startup.login.list.window	how often did i sign out this week
+startup.login.list.window	count my logins yesterday
+startup.login.list.window	how many desktop sessions this week
+startup.login.list.window	all my logins on tuesday
+startup.login.list.window	how many times did i log in and out today
+startup.login.list.window	logins over the weekend
+startup.login.list.window	how many times did i sign in this week
+startup.login.list.window	list every logon since friday
+startup.login.list.window	how many logouts yesterday
+startup.login.list.window	login and logout times this week
+devices.monitor.none	did the second screen disconnect last night
+devices.monitor.none	when did i plug in the monitor
+devices.monitor.none	was the tv connected yesterday
+devices.monitor.none	did the display drop out this morning
+devices.monitor.none	how long was the external screen plugged in
+devices.monitor.none	is the monitor connected
+devices.monitor.none	when did the hdmi screen get unplugged
+devices.monitor.none	did the dock lose the monitor again
+devices.monitor.none	was a second display attached on monday
+devices.monitor.none	did my external display disconnect during the call
+devices.monitor.none	when was the monitor last connected
+devices.monitor.none	did the screen get unplugged while i was away
+devices.monitor.none	was the projector connected yesterday
+devices.monitor.none	how often does the monitor disconnect
+devices.monitor.none	did the external display drop this week
+devices.monitor.none	was the second monitor on last night
+devices.monitor.none	when did the display port screen disconnect
+devices.monitor.none	did the tv unplug itself
+devices.monitor.none	was the monitor plugged in this morning
+devices.monitor.none	did i have the external screen connected on friday
+devices.monitor.none	when did the second screen go off
+identity.bios.settings.none	did someone mess with the uefi settings
+identity.bios.settings.none	what are the bios settings
+identity.bios.settings.none	did the boot order change
+identity.bios.settings.none	is secure boot on
+identity.bios.settings.none	what is the bios set to
+identity.bios.settings.none	did the uefi settings change this week
+identity.bios.settings.none	has anyone changed the firmware settings
+identity.bios.settings.none	what are the firmware options set to
+identity.bios.settings.none	was secure boot turned off
+identity.bios.settings.none	show me the uefi configuration
+identity.bios.settings.none	is the boot order still the same
+identity.bios.settings.none	what fan mode is the bios on
+identity.bios.settings.none	did the firmware settings change
+identity.bios.settings.none	what is set in the bios
+identity.bios.settings.none	were the bios options changed yesterday
+identity.bios.settings.none	is fast boot enabled
+identity.bios.settings.none	what power mode is set in the firmware
+identity.bios.settings.none	what are the uefi options
+identity.bios.settings.none	has the bios setup been touched
+diagnose.cause.window	why did everything go bad on tuesday
+diagnose.cause.window	what caused the trouble yesterday afternoon
+diagnose.cause.window	what was the problem last night
+diagnose.cause.window	why was it misbehaving this week
+diagnose.cause.window	what went wrong while i was out
+diagnose.cause.window	why did the laptop play up on monday
+diagnose.cause.window	what was the issue this morning
+diagnose.cause.window	why was it so bad yesterday evening
+diagnose.cause.window	what caused the mess last night
+diagnose.cause.window	what was going wrong on saturday
+diagnose.cause.window	why did it act strange yesterday
+diagnose.cause.window	what was the matter with it this afternoon
+diagnose.cause.window	why was the machine struggling last week
+diagnose.cause.window	what problems came up today
+diagnose.cause.window	why was it unhappy this morning
+diagnose.cause.window	what went wrong over the weekend
+diagnose.cause.window	why did it behave badly yesterday
+diagnose.cause.window	what was the cause of the trouble on thursday
+story.often.window.process	how long was firefox open today
+story.often.window.process	how many hours did i spend in vscode last week
+story.often.window.process	how long did i have the browser open yesterday
+story.often.window.process	how long was ktorrent running last night
+story.often.window.process	how long has ollama been up
+story.often.window.process	how much time was kate open today
+story.often.window.process	how long did the game run on saturday
+story.often.window.process	how long was the terminal open this morning
+story.often.window.process	how long was haruna playing yesterday
+story.often.window.process	how many hours was firefox open this week
+story.often.window.process	how long did i use blender today
+story.often.window.process	how long was the editor running on monday
+story.often.window.process	how long was discord open last night
+story.often.window.process	how long did the download client run
+story.often.window.process	how long has the server been running this week
+story.often.window.process	how long was chrome open on friday
+story.often.window.process	how long did i have the music player open
+story.often.window.process	how long was the ide running yesterday
+story.often.window.process	how long did the video player run last night
+story.often.window.process	how long has conky been running
+story.tabs.none	what websites did i visit yesterday
+story.tabs.none	which pages are open in my browser
+story.tabs.none	what tabs were open last night
+story.tabs.none	what sites did i look at this morning
+story.tabs.none	which tab is using the most cpu
+story.tabs.none	what was i browsing yesterday
+story.tabs.none	how many tabs are open right now
+story.tabs.none	which websites did i go to this week
+story.tabs.none	what page was open when it crashed
+story.tabs.none	which browser tab is slow
+story.tabs.none	what sites did i visit last night
+story.tabs.none	show me my browsing history
+story.tabs.none	which tabs are open in chrome
+story.tabs.none	what websites was i on this afternoon
+story.tabs.none	which page is eating my memory
+story.tabs.none	what did i look at online yesterday
+story.tabs.none	which sites were open during the slowdown
+story.tabs.none	what tab was playing video
+story.tabs.none	what pages did i have open on monday
+story.typing.none	what did i write yesterday
+story.typing.none	what was i writing when it crashed
+story.typing.none	show me what i typed yesterday
+story.typing.none	what text was on screen when it froze
+story.typing.none	what did i say in the chat last night
+story.typing.none	what was i working on when it died
+story.typing.none	what did i type into firefox
+story.typing.none	what was shown on the screen at 3pm
+story.typing.none	what was i writing on monday
+story.typing.none	what keys did i press before the crash
+story.typing.none	what did i have on screen during the call
+story.typing.none	what was i typing last night
+story.typing.none	what did i write in the editor yesterday
+story.typing.none	what was displayed when it rebooted
+story.typing.none	what did i enter in the terminal
+story.typing.none	what was i reading on screen this morning
+story.typing.none	what commands did i type last night
+story.typing.none	what did i say to the laptop
+story.typing.none	what was on screen before it went off
+none.reminder	set a reminder to update the system
+none.reminder	nudge me next week to dust the vents
+none.reminder	alert me when the battery is low
+none.reminder	remind me to water the plants on friday
+none.reminder	can you tell me tomorrow to check the disk
+none.reminder	schedule a reminder for tonight
+none.reminder	remind me in an hour to plug it in
+none.reminder	set an alarm for the morning
+none.reminder	let me know when the download finishes
+none.reminder	remind me to close the lid before bed
+none.reminder	ping me at 5 to shut down
+none.reminder	can you remind me to run the update
+none.reminder	wake me up at 7
+none.reminder	remind me to charge it tonight
+none.reminder	tell me next monday to clean the keyboard
+none.reminder	set a reminder about the dentist
+none.reminder	remind me to unplug it later
+none.reminder	notify me if it gets hot
+none.reminder	give me a reminder for the meeting tomorrow
+none.reminder	remind me to check the fans on sunday
+programs.list.now	what is open right now
+programs.list.now	which programs are running at the moment
+programs.list.now	what do i have open
+programs.list.now	show me the open applications
+programs.list.now	which apps are running right now
+programs.list.now	what programs are open on the desktop
+programs.list.now	what have i got running
+programs.list.now	list what is open
+programs.list.now	which applications are open at the moment
+programs.list.now	what windows are open
+programs.list.now	what apps am i running
+programs.list.now	what is running on the desktop now
+programs.list.now	which programs did i open
+programs.list.now	what is currently open on the laptop
+programs.list.now	show the running apps
+programs.list.now	what applications are running
+programs.list.now	is anything open right now
+programs.list.now	what apps are up
+programs.list.now	which apps are open now
+programs.list.now	what programs are currently up
+programs.installed.now	what software do i have
+programs.installed.now	list the installed programs
+programs.installed.now	what applications are on here
+programs.installed.now	what do i have installed
+programs.installed.now	show me all the apps on this machine
+programs.installed.now	which apps have i got installed
+programs.installed.now	what programs are available
+programs.installed.now	what is installed on this laptop
+programs.installed.now	list every installed application
+programs.installed.now	what apps came with the system
+programs.installed.now	which applications are installed
+programs.installed.now	what software is on the machine
+programs.installed.now	show the installed software
+programs.installed.now	what programs do i have on here
+programs.installed.now	what apps do i have
+programs.installed.now	is there a list of installed apps
+programs.installed.now	what applications do i have installed
+programs.installed.now	which programs are on this computer
+programs.installed.now	what is installed here
+sound.value.none	is the sound on
+sound.value.none	what is the volume at
+sound.value.none	is the audio muted
+sound.value.none	are the speakers on
+sound.value.none	is the mic muted
+sound.value.none	what is the sound level
+sound.value.none	is the laptop muted
+sound.value.none	how high is the volume
+sound.value.none	is the audio working
+sound.value.none	what volume is it set to
+sound.value.none	is the speaker muted
+sound.value.none	is the sound up or down
+sound.value.none	is the output muted
+sound.value.none	what is the current volume
+sound.value.none	is my audio on
+sound.value.none	are the speakers muted right now
+sound.value.none	is the sound off
+sound.value.none	what is the volume level now
+programs.owner.list.now	which processes run as my user
+programs.owner.list.now	which processes are mine
+programs.owner.list.now	what runs under other accounts
+programs.owner.list.now	which programs run as root
+programs.owner.list.now	what is running under my account
+programs.owner.list.now	which processes are owned by root
+programs.owner.list.now	what runs as the ollama user
+programs.owner.list.now	show processes by owner
+programs.owner.list.now	which processes run as other users
+programs.owner.list.now	what is running as root
+programs.owner.list.now	who is running what right now
+programs.owner.list.now	which user owns the most processes
+programs.owner.list.now	what processes run under my name
+programs.owner.list.now	list root owned processes
+programs.owner.list.now	which programs are not running as root

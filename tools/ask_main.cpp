@@ -29,6 +29,12 @@ std::string exe_dir() {
     return p.substr(0, p.rfind('/'));
 }
 
+// The embedding model's folder, from either the folder itself or its model.onnx (ASK_EMBED_MODEL takes both).
+std::string model_dir(const std::string& p) {
+    const std::string tail = "/model.onnx";
+    return p.size() > tail.size() && p.compare(p.size() - tail.size(), tail.size(), tail) == 0 ? p.substr(0, p.size() - tail.size()) : p;
+}
+
 std::string first_existing(const std::vector<std::string>& paths) {
     for (const auto& p : paths)
         if (access(p.c_str(), R_OK) == 0) return p;
@@ -65,8 +71,9 @@ int main(int argc, char** argv) {
         const std::string kinds_dir = first_existing({dir + "/../share/activityscope/kinds/kinds.tsv", dir + "/../data/kinds/kinds.tsv"});
         mkdir((data + "/kinds").c_str(), 0755);
         as::Kinds kinds;
-        if (!kinds.load(kinds_dir.substr(0, kinds_dir.rfind('/')), data + "/kinds",
-                        em ? em : home_path("/.local/share/unllm/models/bge-small-en-v1.5"), rebuild_kinds)) {
+        const std::string matcher = em ? em : first_existing({home_path("/.local/share/unllm/models/bge-small-tuned/model.onnx"),
+                                                              home_path("/.local/share/unllm/models/bge-small-en-v1.5/model.onnx")});
+        if (!kinds.load(kinds_dir.substr(0, kinds_dir.rfind('/')), data + "/kinds", model_dir(matcher), rebuild_kinds)) {
             std::printf("ask: the kinds catalogue or the embedding model could not be loaded\n");
             return 1;
         }
@@ -138,9 +145,15 @@ int main(int argc, char** argv) {
     // under the data folder, the embedding model from unllm's install.
     {
         const char* em = getenv("ASK_EMBED_MODEL");
+        const char* mm = getenv("ASK_MEANING_MODEL");
         const std::string kf = first_existing({dir + "/../share/activityscope/kinds/kinds.tsv", dir + "/../data/kinds/kinds.tsv"});
         mkdir((data + "/kinds").c_str(), 0755);
-        ask.load_kinds(kf.substr(0, kf.rfind('/')), data + "/kinds", em ? em : home_path("/.local/share/unllm/models/bge-small-en-v1.5"));
+        // The matcher's model: the copy of bge-small fine-tuned on the catalogue when it is installed, else bge-small
+        // itself; the untouched bge-small does general meaning either way.
+        const std::string matcher = em ? em : first_existing({home_path("/.local/share/unllm/models/bge-small-tuned/model.onnx"),
+                                                              home_path("/.local/share/unllm/models/bge-small-en-v1.5/model.onnx")});
+        ask.load_kinds(kf.substr(0, kf.rfind('/')), data + "/kinds", model_dir(matcher),
+                       mm ? mm : home_path("/.local/share/unllm/models/bge-small-en-v1.5"));
     }
     // The final check (askcore.h): the local 4B reads each answer; ASK_CHECK names
     // another model or "off". Without Ollama the answers stand as they are.

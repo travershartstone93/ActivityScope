@@ -828,7 +828,7 @@ AskResult Ask::ask_once(const std::string& question, int64_t now, const std::str
         // ("fan noise last night" asks no why: the fan's level, not the heat's culprits; "why was the fan loud" keeps them).
         if (const QuestionKind* top = force_kind.empty() ? kinds_.find(km.id) : nullptr) {
             const bool why = reading.wants == unllm::Wants::Cause;
-            for (std::size_t i = 0; i < km.runners.size() && km.score - km.runners[i].second <= 0.02f; ++i)
+            for (std::size_t i = 0; i < km.runners.size() && km.score - km.runners[i].second <= kinds_.cutoff("band", 0.02f); ++i)
                 if (const QuestionKind* k = kinds_.find(km.runners[i].first);
                     k && k->topic == top->topic && (top->form == "a cause") != why && (k->form == "a cause") == why) {
                     km.id = k->id;
@@ -885,12 +885,12 @@ AskResult Ask::ask_once(const std::string& question, int64_t now, const std::str
         if (const QuestionKind* k = kinds_.find(km.id); k && force_kind.empty() && k->topic != "none" && !what_is) {
             const auto it = by_name.find(k->topic);
             const auto& own = turn.reading.intents;
-            doubted = km.topic_score(k->topic) < 0.83f &&
+            doubted = km.topic_score(k->topic) < kinds_.cutoff("doubt", 0.83f) &&
                       (it == by_name.end() || std::find(own.begin(), own.end(), it->second) == own.end());
             // Nothing fits: no phrasing near (under 0.80, the understanding line), the topic below the score where right
             // answers were rare (0.795 on the same questions, 1 of 88), and no topic read by the analyzer either. Then a
             // near miss is not given as the answer.
-            unplaced = doubted && own.empty() && km.score < 0.80f && km.topic_score(k->topic) < 0.795f;
+            unplaced = doubted && own.empty() && km.score < kinds_.cutoff("understand", 0.80f) && km.topic_score(k->topic) < kinds_.cutoff("unplaced_topic", 0.795f);
         }
         if (const QuestionKind* k = kinds_.find(km.id); k && k->topic != "none" && !what_is) {
             if (auto it = by_name.find(k->topic); it != by_name.end()) {
@@ -898,15 +898,15 @@ AskResult Ask::ask_once(const std::string& question, int64_t now, const std::str
                 reading.intents.insert(reading.intents.begin(), it->second);
                 // A close match is understanding; a loose one leads the intents but leaves the
                 // clarify gate to decide ("how do i cook a steak" must still ask).
-                if (km.score >= 0.80f) reading.domain = std::max(reading.domain, double(km.score));
+                if (km.score >= kinds_.cutoff("understand", 0.80f)) reading.domain = std::max(reading.domain, double(km.score));
                 // A close match on a kind about a past window ("show me the memory spike during the game")
                 // outranks present tense; only words that say now ("right now", "currently") keep it live.
-                if (km.score >= 0.80f && k->window == "window" && !reading.window.live) reading.window.present = false;
+                if (km.score >= kinds_.cutoff("understand", 0.80f) && k->window == "window" && !reading.window.live) reading.window.present = false;
                 // The kind's answer form: a close "cause" kind is a why question, whatever the wording.
-                if (km.score >= 0.80f && k->form == "a cause") reading.wants = unllm::Wants::Cause;
+                if (km.score >= kinds_.cutoff("understand", 0.80f) && k->form == "a cause") reading.wants = unllm::Wants::Cause;
                 // A close match on another topic outranks the words that read as "the machine itself"
                 // ("what happened to my laptop at lunch" is not asking what the laptop is).
-                if (km.score >= 0.80f && it->second != Intent::Identity)
+                if (km.score >= kinds_.cutoff("understand", 0.80f) && it->second != Intent::Identity)
                     reading.intents.erase(std::remove(reading.intents.begin(), reading.intents.end(), Intent::Identity), reading.intents.end());
             }
         }
@@ -931,7 +931,7 @@ AskResult Ask::ask_once(const std::string& question, int64_t now, const std::str
     }
     // A loose match on a kind read from the logs is understanding only when the question names something the records
     // hold: a program, or a package the software log lists ("when did i put cuda on here" matches at 0.758).
-    if (!space_kind.empty() && from_logs(space_kind) && kind_score < 0.80f && reading.domain < 0.6) {
+    if (!space_kind.empty() && from_logs(space_kind) && kind_score < kinds_.cutoff("understand", 0.80f) && reading.domain < 0.6) {
         bool named = !named_.empty();
         for (const auto& e : reading.entities) named |= e.type == "program";
         if (!named && named_package(db_, an_, q).empty()) space_kind.clear();
@@ -1256,14 +1256,14 @@ void Ask::place_event(unllm::Reading& r, int64_t now) {
         std::vector<Row> rows;
     };
     std::vector<Source> sources;
-    const KindMatch km = kinds_.match(r.event_clause);
+    const KindMatch km = placer().match(r.event_clause);
     // The person's own doing ("when i had the zoom call") or a thing "during" names (the update) is an event only through
     // the record set of its nearest kind, when it names no program: else any record near it in meaning would do, and
     // none of them is it.
     const auto ct = unllm::tokenize(r.event_clause);
     const bool strict = !from_clause && (r.event_during || (!ct.empty() && (ct[0].lower == "i" || ct[0].lower == "we")));
     auto gather = [&] {
-        for (std::size_t i = 0; i < km.runners.size() && i < (strict ? 1u : 8u) && km.runners[i].second >= 0.70f; ++i) {
+        for (std::size_t i = 0; i < km.runners.size() && i < (strict ? 1u : 8u) && km.runners[i].second >= placer().cutoff("records", 0.70f); ++i) {
             std::string key;
             auto rows = records(km.runners[i].first, &key);
             bool seen = false;
@@ -1304,7 +1304,7 @@ void Ask::place_event(unllm::Reading& r, int64_t now) {
     // ("i shut the lid" is "Lid closed", not an out-of-memory kill).
     std::size_t pick = 0;
     std::string title;
-    if (const unllm::Meaning* model = kinds_.model(); model && model->can_embed()) {
+    if (const unllm::Meaning* model = meaning(); model && model->can_embed()) {
         const auto q = model->embed(r.event_clause, false);
         float best = -2;
         for (std::size_t s = 0; s < sources.size(); ++s) {
@@ -1378,7 +1378,7 @@ std::string Ask::state_lead(const unllm::Reading& r, int64_t now) const {
                                    {"Went to sleep", "Woke from sleep", "it was asleep", "it didn't sleep"},
                                    {"Unplugged from power", "Plugged into power", "it was on battery", "it wasn't on battery"},
                                    {"Plugged into power", "Unplugged from power", "it was on the charger", "it wasn't on the charger"}};
-    const unllm::Meaning* model = kinds_.model();
+    const unllm::Meaning* model = meaning();
     if (r.condition_clause.empty() || !r.condition.empty() || !model || !model->can_embed() || !db_) return "";
     const auto q = model->embed(r.condition_clause, false);
     const State* named = nullptr;
@@ -1424,7 +1424,7 @@ std::string Ask::state_lead(const unllm::Reading& r, int64_t now) const {
 
 int Ask::asked_test(const unllm::Reading& r, const std::vector<std::vector<const char*>>& tests) const {
     if (r.judge != unllm::Judge::None) return -1;
-    const unllm::Meaning* model = kinds_.model();
+    const unllm::Meaning* model = meaning();
     if (!model || !model->can_embed()) return 0;
     const auto q = model->embed(card_.question, false);
     int pick = 0;
@@ -1519,7 +1519,7 @@ AskResult Ask::ask(const std::string& question, int64_t now) {
             const KindMatch a = kinds_.match(first), b = kinds_.match(second);
             const QuestionKind* ka = kinds_.find(a.id);
             const QuestionKind* kb = kinds_.find(b.id);
-            if (ka && kb && a.id != b.id && a.score >= 0.85f && b.score >= 0.85f && ka->window != "window" && kb->window != "window" &&
+            if (ka && kb && a.id != b.id && a.score >= kinds_.cutoff("two_questions", 0.85f) && b.score >= kinds_.cutoff("two_questions", 0.85f) && ka->window != "window" && kb->window != "window" &&
                 ka->topic != "none" && kb->topic != "none") {
                 AskResult one = ask_once(first, now, "");
                 unllm::Card card_one = card_;
@@ -1713,7 +1713,7 @@ AskResult Ask::answer_reading(const unllm::Reading& r, const std::vector<unllm::
             res.body = health_now(*s, low_battery_level(roots_.etc));
             // Slow with the CPU idle: the other places a machine waits, said when they show.
             if (s->mem.pressure_some10.ok() && s->mem.pressure_some10.get() >= 1)
-                res.body += fmt(" Programs waited on memory %.0f%% of the time in the last ten seconds.", s->mem.pressure_some10.get());
+                res.body += " Programs waited on memory " + fmt("%.0f%%", s->mem.pressure_some10.get()) + " of the time in the last ten seconds.";
             res.body += " From the last 30 days of records:";
             for (std::size_t i = 0; i < cons.size() && i < 3; ++i) {
                 res.body += " " + cons[i].sentence;
@@ -6407,7 +6407,7 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
         const Side sides[2] = {charger ? Side{"Plugged into power", "plugged in", ""} : lid ? Side{"Lid closed", "closed", ""} : Side{"Logged in", "logged in", "log in"},
                                charger ? Side{"Unplugged from power", "unplugged", ""} : lid ? Side{"Lid opened", "opened", ""} : Side{"Logged out", "logged out", "log out"}};
         int side = 0;
-        if (const unllm::Meaning* model = kinds_.model(); model && model->can_embed()) {
+        if (const unllm::Meaning* model = meaning(); model && model->can_embed()) {
             const auto q = model->embed(card_.question, false);
             float best = -2;
             for (int i = 0; i < 2; ++i) {

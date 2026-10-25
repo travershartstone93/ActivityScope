@@ -50,6 +50,7 @@ struct Kinds::Impl {
     std::vector<std::string> topics;   // the kinds' topics, each once
     std::vector<int32_t> topic_of;     // kind index -> topic index
     std::map<std::string, std::string> plain;  // words.tsv: "topic\tslow" -> "CPU load and slowness"
+    std::map<std::string, float> cutoffs;      // embed.json "cutoffs": this model's calibrated cut-offs
     std::vector<std::string> phrasing;
     std::vector<float> vectors;        // phrasing-major, d floats each, unit length
     std::map<std::string, std::set<std::string>> topics_of;  // a phrasing word -> the topics whose phrasings use it
@@ -134,9 +135,26 @@ bool Kinds::load(const std::string& dir, const std::string& cache, const std::st
             }
     }
     if (im.phrasing.empty() || !im.model.load_model(model_dir)) return false;
+    im.cutoffs.clear();
+    if (std::ifstream jf(model_dir + "/embed.json"); jf) {  // "cutoffs": {"name": number, ...}, as calibrate.py writes it
+        const std::string j((std::istreambuf_iterator<char>(jf)), std::istreambuf_iterator<char>());
+        if (auto at = j.find("\"cutoffs\""); at != std::string::npos)
+            for (at = j.find('{', at); at != std::string::npos && j[at] != '}';) {
+                const auto k0 = j.find('"', at + 1), k1 = k0 == std::string::npos ? k0 : j.find('"', k0 + 1);
+                if (k1 == std::string::npos) break;
+                const auto colon = j.find(':', k1);
+                if (colon == std::string::npos) break;
+                im.cutoffs[j.substr(k0 + 1, k1 - k0 - 1)] = std::strtof(j.c_str() + colon + 1, nullptr);
+                at = j.find_first_of(",}", colon);
+                if (at == std::string::npos || j[at] == '}') break;
+            }
+    }
     im.d = im.model.dim();
     const int64_t stamp = stamp_of(dir + "/phrasings.tsv") + 7919 * stamp_of(model_dir + "/model.onnx");  // one file, one model
-    const std::string vec = cache + "/phrasings.vec";
+    // One cache per model: the general model and a tuned matcher each keep their own vectors of the same phrasings.
+    std::string tag = model_dir.substr(0, model_dir.find_last_not_of('/') + 1);
+    tag = tag.substr(tag.rfind('/') + 1);
+    const std::string vec = cache + "/phrasings." + tag + ".vec";
     if (rebuild || !im.read_cache(vec, stamp)) {
         // Every phrasing through the model once; a few seconds per thousand.
         im.vectors.assign(im.phrasing.size() * std::size_t(im.d), 0.0f);
@@ -165,6 +183,11 @@ bool Kinds::phrased(const std::string& kind, const std::string& word) const {
     return it != impl_->kinds_of.end() && it->second.count(kind) > 0;
 }
 const unllm::Meaning* Kinds::model() const { return impl_->model.can_embed() ? &impl_->model : nullptr; }
+
+float Kinds::cutoff(const std::string& name, float dflt) const {
+    auto it = impl_->cutoffs.find(name);
+    return it == impl_->cutoffs.end() ? dflt : it->second;
+}
 
 std::string Kinds::plain(const std::string& what, const std::string& value) const {
     auto it = impl_->plain.find(what + "\t" + value);
