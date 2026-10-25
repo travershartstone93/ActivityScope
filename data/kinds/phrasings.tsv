@@ -5951,3 +5951,17 @@ sound.value.none	is sound turned off
 sound.value.none	are the speakers muted
 sound.value.none	whats the volume level
 sound.value.none	is the sound working
+programs.owner.list.now	which running processes are not owned by root
+programs.owner.list.now	what is running as root right now
+programs.owner.list.now	which processes run under my user
+programs.owner.list.now	who owns the running processes
+programs.owner.list.now	list processes by user
+programs.owner.list.now	what processes belong to root
+programs.owner.list.now	which programs are running as me
+programs.owner.list.now	how many processes does each user have
+programs.owner.list.now	what is running under other accounts
+programs.owner.list.now	which processes are mine and which are the systems
+identity.disk	what filesystem is mounted at /
+identity.disk	what filesystem is / on
+identity.disk	is the root filesystem ext4 or btrfs
+identity.disk	what type of filesystem does the drive use

@@ -7,6 +7,7 @@
 #include <cstring>
 #include <filesystem>
 #include <sys/stat.h>
+#include <mntent.h>
 #include <strings.h>
 #include <sstream>
 #include "dirscan.h"
@@ -809,6 +810,7 @@ AskResult Ask::ask_once(const std::string& question, int64_t now, const std::str
     std::string space_kind;                    // a free-disk-space question, answered by answer_space
     float kind_score = 1;                      // how near the question is to that kind's nearest phrasing
     bool doubted = false;                      // the read-back gate below doubts the reading
+    bool unplaced = false;                     // doubted, far from every topic, and the analyzer read no topic: unanswered
     std::vector<std::string> readings;
     if (kinds_.ready()) {
         // The speller's fixes are guesses toward the analyzer's words ("health" became "healthy"):
@@ -885,6 +887,10 @@ AskResult Ask::ask_once(const std::string& question, int64_t now, const std::str
             const auto& own = turn.reading.intents;
             doubted = km.topic_score(k->topic) < 0.83f &&
                       (it == by_name.end() || std::find(own.begin(), own.end(), it->second) == own.end());
+            // Nothing fits: no phrasing near (under 0.80, the understanding line), the topic below the score where right
+            // answers were rare (0.795 on the same questions, 1 of 88), and no topic read by the analyzer either. Then a
+            // near miss is not given as the answer.
+            unplaced = doubted && own.empty() && km.score < 0.80f && km.topic_score(k->topic) < 0.795f;
         }
         if (const QuestionKind* k = kinds_.find(km.id); k && k->topic != "none" && !what_is) {
             if (auto it = by_name.find(k->topic); it != by_name.end()) {
@@ -1154,7 +1160,19 @@ AskResult Ask::ask_once(const std::string& question, int64_t now, const std::str
     }
     // A reading the read-back gate doubts is said first, in the catalogue's words for the kind; the answer stays. Not on
     // the honest reply or a request to clarify (refused), which answer no kind.
-    if (fresh_ && doubted && !res.refused) {
+    if (fresh_ && unplaced && !res.refused) {
+        res.scope.clear();
+        res.lead.clear();
+        res.notes.clear();
+        res.receipts.clear();
+        res.undecided = false;
+        res.body = "I can't place that in what this machine records. The nearest reading I have is " + kind_words(kind_) +
+                   "; if that is what you meant, ask it that way. If not, it is outside these records.";
+        res.branch = "unanswered:unplaced";
+        res.refused = true;
+        res.read_back = true;
+        card_.refused = true;
+    } else if (fresh_ && doubted && !res.refused) {
         res.scope.insert(res.scope.begin(), "I took this as a question about " + kind_words(kind_) +
                                                 "; if you meant something else, ask with more detail.");
         res.read_back = true;
@@ -1692,7 +1710,11 @@ AskResult Ask::answer_reading(const unllm::Reading& r, const std::vector<unllm::
         Diagnose diag(db_);
         auto cons = diag.run(now - 30 * 86400, now, now, s.get());
         if (about_now) {
-            res.body = health_now(*s, low_battery_level(roots_.etc)) + " From the last 30 days of records:";
+            res.body = health_now(*s, low_battery_level(roots_.etc));
+            // Slow with the CPU idle: the other places a machine waits, said when they show.
+            if (s->mem.pressure_some10.ok() && s->mem.pressure_some10.get() >= 1)
+                res.body += fmt(" Programs waited on memory %.0f%% of the time in the last ten seconds.", s->mem.pressure_some10.get());
+            res.body += " From the last 30 days of records:";
             for (std::size_t i = 0; i < cons.size() && i < 3; ++i) {
                 res.body += " " + cons[i].sentence;
                 if (!cons[i].gap.empty() && res.receipts.size() < 6) res.receipts.push_back("gap: " + cons[i].gap);
@@ -4513,7 +4535,7 @@ bool answers_from_records(const std::string& kind) {
                                             "gpu.value.window", "diagnose.compare.window", "battery.value.now",
                                             "network.inbound.window", "disk.health.now", "identity.bios.flash",
                                             "story.often.window.process", "network.new.list.window", "slow.procs.value.window",
-                                            "slow.above.value.window", "identity.list", "programs.list.now", "programs.installed.now"};
+                                            "slow.above.value.window", "identity.list", "programs.list.now", "programs.installed.now", "programs.owner.list.now"};
     return k.count(kind) > 0 || from_logs(kind);
 }
 
@@ -6897,6 +6919,31 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
         res.branch = "records:boottime";
         return res;
     }
+    if (kind == "programs.owner.list.now") {
+        // "Which processes are not owned by root": every process by the account it runs as, with the busiest of each.
+        if (!sampler_) sampler_ = std::make_unique<Sampler>();
+        const SnapshotPtr s = sampler_->sample();
+        std::map<std::string, std::vector<const ProcessInfo*>> by;
+        for (const auto& p : s->procs)
+            if (!p.self) by[p.user.empty() ? "an unknown account" : p.user].push_back(&p);
+        std::vector<std::pair<std::string, std::vector<const ProcessInfo*>>> list(by.begin(), by.end());
+        std::sort(list.begin(), list.end(), [](const auto& a, const auto& b) { return a.second.size() > b.second.size(); });
+        std::vector<std::string> said;
+        std::size_t total = 0;
+        for (auto& [user, procs] : list) {
+            total += procs.size();
+            std::sort(procs.begin(), procs.end(), [](const ProcessInfo* a, const ProcessInfo* b) { return a->cpu > b->cpu; });
+            std::vector<std::string> top;
+            for (std::size_t i = 0; i < procs.size() && top.size() < 3; ++i)
+                if (std::find(top.begin(), top.end(), procs[i]->name) == top.end()) top.push_back(procs[i]->name);
+            said.push_back(std::to_string(procs.size()) + " as " + user + " (" + unllm::join_list(top) + ")");
+            if (res.receipts.size() < 8) res.receipts.push_back(user + "  " + std::to_string(procs.size()) + " processes");
+        }
+        res.body = std::to_string(total) + " processes are running right now: " + unllm::join_list(said) + ".";
+        res.notes.push_back("Each account's busiest programs are in brackets; kernel threads run as root.");
+        res.branch = "records:procs-by-owner";
+        return res;
+    }
     if (kind == "programs.list.now") {
         // The apps the desktop launched and still running: systemd runs each in a unit named "app-<id>..." (firefox in
         // app-firefox@..., haruna in app-org.kde.haruna@1.service), so the unit says which processes are apps and which.
@@ -7145,6 +7192,15 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
                     d.push_back((x.model.empty() ? x.name : trim(x.model)) + ", " + human_bytes(double(x.size)) + (x.kind.empty() ? "" : " " + x.kind) +
                                 " (" + x.name + ")");
             res.body = d.empty() ? "I can't see a disk." : std::string(d.size() == 1 ? "The disk is " : "The disks are ") + unllm::join_list(d) + ".";
+            // "What filesystem is mounted at /": the mount table's own entry.
+            if (FILE* mt = setmntent("/proc/mounts", "r")) {
+                while (mntent* e = getmntent(mt))
+                    if (std::string(e->mnt_dir) == "/") {
+                        res.body += " / is " + std::string(e->mnt_type) + " on " + e->mnt_fsname + ".";
+                        break;
+                    }
+                endmntent(mt);
+            }
         } else if (kind == "identity.kernel") {
             res.body = "It runs kernel " + id.kernel + " (" + id.arch + ") on " + id.os_pretty + ".";
             // A question about its changes ("kernel version change history", "when was the kernel last updated"):

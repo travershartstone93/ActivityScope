@@ -1769,6 +1769,7 @@ void test_kinds() {
     const std::string model = em ? em : std::string(home ? home : "") + "/.local/share/unllm/models/bge-small-en-v1.5";
     if (access((model + "/model.onnx").c_str(), R_OK) != 0) {
         std::puts("  no embedding model: matcher checks skipped");
+        CHECK(std::getenv("ASCORE_ALLOW_NO_MODEL") != nullptr);  // a skip must be asked for, never silent
         return;
     }
     // The phrasing vectors are kept beside the test binary: only a changed phrasings.tsv pays for them again.
@@ -1861,6 +1862,13 @@ void test_kinds() {
     CHECK(lands("did my bluetooth speaker connect this morning", {"devices.list.window"}));
     CHECK(lands("how long was the cpu above 80% today", {"slow.above.value.window"}));
     CHECK(lands("how long was the cpu above 90 percent yesterday", {"slow.above.value.window"}));
+    // Questions real use and outside reviews found misrouted (2026-10-25).
+    CHECK(lands("which running processes are not owned by root", {"programs.owner.list.now"}));
+    CHECK(lands("what is running as root right now", {"programs.owner.list.now"}));
+    CHECK(lands("what filesystem is mounted at /", {"identity.disk"}));
+    CHECK(lands("what percent of the hard drive is used", {"disk.space.value.now"}));
+    CHECK(lands("what apps are currently open", {"programs.list.now"}));
+    CHECK(lands("is the volume muted", {"sound.value.none"}));
     // What the records cannot hold: BIOS settings, monitors and screens, reminders (ask answers, it doesn't act).
     CHECK(lands("bios settings changed", {"identity.bios.settings.none"}));
     CHECK(lands("did someone mess with the uefi settings", {"identity.bios.settings.none"}));
@@ -1908,6 +1916,7 @@ void test_read_back() {
     const std::string model_dir = em ? em : std::string(home ? home : "") + "/.local/share/unllm/models/bge-small-en-v1.5";
     if (access((model_dir + "/model.onnx").c_str(), R_OK) != 0) {
         std::puts("  no embedding model: read-back checks skipped");
+        CHECK(std::getenv("ASCORE_ALLOW_NO_MODEL") != nullptr);  // a skip must be asked for, never silent
         return;
     }
     const std::string dir = fs::temp_directory_path() / ("as-readback-" + std::to_string(getpid()));
@@ -1938,10 +1947,16 @@ void test_read_back() {
     const std::string invite = "; if you meant something else, ask with more detail.";
     // Row 68: spending, matched to the swap's use over a window. The read-back names the kind from the catalogue (its
     // topic, its answer's form, its time) and comes first; the answer follows as it was.
+    // Row 68: spending, nearest to the swap's use at 0.80 with no topic read: nothing fits, so the honest reply with the
+    // nearest reading named (the catalogue's words for the kind), not the swap answer.
     const as::AskResult spend = ask("how much did i spend on the amazon app last month", at(13, 59));
-    CHECK(spend.read_back && spend.answer.rfind(said + "memory (how much, in the past)" + invite + " ", 0) == 0);
-    CHECK(!spend.body.empty() && spend.answer.size() > spend.body.size() &&
-          spend.answer.compare(spend.answer.size() - spend.body.size(), spend.body.size(), spend.body) == 0);
+    CHECK(spend.refused && spend.read_back && spend.branch == "unanswered:unplaced" &&
+          spend.answer.find("nearest reading I have is memory (how much, in the past)") != std::string::npos);
+    // Nothing fits at all (a linker error, an exit code): the honest reply with the nearest reading offered, not a near miss.
+    for (const char* q : {"what does undefined reference to main mean", "what song was playing when the fans spun up earlier"}) {
+        const as::AskResult none = ask(q, at(13, 59));
+        CHECK(none.refused && none.branch == "unanswered:unplaced" && none.answer.find("nearest reading") != std::string::npos);
+    }
     // Near its topic: none. Far from it (row 175, 0.80) but read by the analyzer as memory itself: none either.
     const as::AskResult used = ask("which program used the most memory this week", at(13, 59));
     CHECK(!used.read_back && used.answer.find(said) == std::string::npos);
@@ -2184,6 +2199,7 @@ void test_records_data() {
     const std::string model_dir = em ? em : std::string(home ? home : "") + "/.local/share/unllm/models/bge-small-en-v1.5";
     if (access((model_dir + "/model.onnx").c_str(), R_OK) != 0) {
         std::puts("  no embedding model: skipped");
+        CHECK(std::getenv("ASCORE_ALLOW_NO_MODEL") != nullptr);  // a skip must be asked for, never silent
         return;
     }
     const std::string dir = fs::temp_directory_path() / ("as-records-" + std::to_string(getpid()));
@@ -2544,6 +2560,7 @@ void test_records_log() {
     const std::string model = em ? em : home + "/.local/share/unllm/models/bge-small-en-v1.5";
     if (access((model + "/model.onnx").c_str(), R_OK) != 0) {
         std::puts("  no embedding model: records checks skipped");
+        CHECK(std::getenv("ASCORE_ALLOW_NO_MODEL") != nullptr);  // a skip must be asked for, never silent
         return;
     }
     const std::string dir = fs::temp_directory_path() / ("as-reclog-" + std::to_string(getpid()));
@@ -2767,6 +2784,7 @@ void test_event_answers() {
     const std::string model_dir = em ? em : std::string(home ? home : "") + "/.local/share/unllm/models/bge-small-en-v1.5";
     if (access((model_dir + "/model.onnx").c_str(), R_OK) != 0) {
         std::puts("  no embedding model: event answer checks skipped");
+        CHECK(std::getenv("ASCORE_ALLOW_NO_MODEL") != nullptr);  // a skip must be asked for, never silent
         return;
     }
     const std::string dir = fs::temp_directory_path() / ("as-events-" + std::to_string(getpid()));
@@ -3071,6 +3089,7 @@ void test_answer_shapes() {
     const std::string model_dir = em ? em : std::string(home ? home : "") + "/.local/share/unllm/models/bge-small-en-v1.5";
     if (access((model_dir + "/model.onnx").c_str(), R_OK) != 0) {
         std::puts("  no embedding model: answer shape checks skipped");
+        CHECK(std::getenv("ASCORE_ALLOW_NO_MODEL") != nullptr);  // a skip must be asked for, never silent
         return;
     }
     const std::string dir = fs::temp_directory_path() / ("as-shapes-" + std::to_string(getpid()));
@@ -3313,6 +3332,7 @@ void test_catalogue_kinds() {
     const std::string model_dir = em ? em : std::string(home ? home : "") + "/.local/share/unllm/models/bge-small-en-v1.5";
     if (access((model_dir + "/model.onnx").c_str(), R_OK) != 0) {
         std::puts("  no embedding model: catalogue kind checks skipped");
+        CHECK(std::getenv("ASCORE_ALLOW_NO_MODEL") != nullptr);  // a skip must be asked for, never silent
         return;
     }
     const std::string dir = fs::temp_directory_path() / ("as-catkinds-" + std::to_string(getpid()));
@@ -3663,6 +3683,7 @@ void test_window_answers() {
     const std::string model_dir = em ? em : std::string(home ? home : "") + "/.local/share/unllm/models/bge-small-en-v1.5";
     if (access((model_dir + "/model.onnx").c_str(), R_OK) != 0) {
         std::puts("  no embedding model: window answer checks skipped");
+        CHECK(std::getenv("ASCORE_ALLOW_NO_MODEL") != nullptr);  // a skip must be asked for, never silent
         return;
     }
     const std::string dir = fs::temp_directory_path() / ("as-windows-" + std::to_string(getpid()));
@@ -4247,6 +4268,7 @@ void test_records_n50() {
     const std::string model = em ? em : home + "/.local/share/unllm/models/bge-small-en-v1.5";
     if (access((model + "/model.onnx").c_str(), R_OK) != 0) {
         std::puts("  no embedding model: skipped");
+        CHECK(std::getenv("ASCORE_ALLOW_NO_MODEL") != nullptr);  // a skip must be asked for, never silent
         return;
     }
     const std::string dir = fs::temp_directory_path() / ("as-n50-" + std::to_string(getpid()));
@@ -4576,6 +4598,7 @@ void test_live_t95() {
     const std::string model = em ? em : home + "/.local/share/unllm/models/bge-small-en-v1.5";
     if (access((model + "/model.onnx").c_str(), R_OK) != 0) {
         std::puts("  no embedding model: skipped");
+        CHECK(std::getenv("ASCORE_ALLOW_NO_MODEL") != nullptr);  // a skip must be asked for, never silent
         return;
     }
     const std::string dir = fs::temp_directory_path() / ("as-t95live-" + std::to_string(getpid()));
@@ -4880,6 +4903,7 @@ void test_asked_leads() {
     const std::string model = em ? em : home + "/.local/share/unllm/models/bge-small-en-v1.5";
     if (access((model + "/model.onnx").c_str(), R_OK) != 0) {
         std::puts("  no embedding model: skipped");
+        CHECK(std::getenv("ASCORE_ALLOW_NO_MODEL") != nullptr);  // a skip must be asked for, never silent
         return;
     }
     const std::string dir = fs::temp_directory_path() / ("as-leads-" + std::to_string(getpid()));
@@ -5016,6 +5040,7 @@ void test_records_t95() {
     const std::string model = em ? em : home + "/.local/share/unllm/models/bge-small-en-v1.5";
     if (access((model + "/model.onnx").c_str(), R_OK) != 0) {
         std::puts("  no embedding model: skipped");
+        CHECK(std::getenv("ASCORE_ALLOW_NO_MODEL") != nullptr);  // a skip must be asked for, never silent
         return;
     }
     const std::string dir = fs::temp_directory_path() / ("as-t95-" + std::to_string(getpid()));

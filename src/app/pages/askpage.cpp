@@ -120,7 +120,7 @@ void AskPage::go() {
                          QDir::homePath().toStdString() + "/.local/share/unllm/models/bge-small-en-v1.5");
         // The final check (askcore.h), as the CLI sets it; ASK_CHECK=off turns it off.
         ask_->set_checker(qEnvironmentVariableIsSet("ASK_CHECK") ? qEnvironmentVariable("ASK_CHECK").toStdString()
-                                                                 : std::string("qwen3:4b"));
+                                                                 : std::string("off"));
     }
     // The check can take a few seconds: the question is answered on a worker thread.
     goBtn_->setEnabled(false);

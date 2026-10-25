@@ -100,9 +100,9 @@ int main(int argc, char** argv) {
                   "  ask --as KIND ...        answer as that catalogue kind (measuring)\n"
                   "  ask --offer KIND ...     show the check that kind first (measuring)\n"
                   "The history comes from ActivityScope; answers carry the records they\n"
-                  "stand on: table lookups and arithmetic. A small local model (Ollama,\n"
-                  "qwen3:4b) checks each answer fits the question and never writes one;\n"
-                  "ASK_CHECK=off turns the check off. Nothing leaves this machine.");
+                  "stand on: table lookups and arithmetic. ASK_CHECK=qwen3:4b adds a check\n"
+                  "by a small local model (Ollama) that an answer fits its question; it never\n"
+                  "writes one, and it is off unless asked for. Nothing leaves this machine.");
         return 0;
     }
     if (question == "-i") question.clear();
@@ -145,7 +145,7 @@ int main(int argc, char** argv) {
     // The final check (askcore.h): the local 4B reads each answer; ASK_CHECK names
     // another model or "off". Without Ollama the answers stand as they are.
     const char* check = getenv("ASK_CHECK");
-    ask.set_checker(check ? check : "qwen3:4b");
+    ask.set_checker(check ? check : "off");
     ask.force_reading(force_kind);
     ask.offer_reading(offer_kind);
     auto answer = [&](const std::string& q) {

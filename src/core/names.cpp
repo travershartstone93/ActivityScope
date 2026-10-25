@@ -852,7 +852,15 @@ Names::Impl::Parsed Names::Impl::parse(const std::string& question, const unllm:
     // "that" or "my": its first one to three words are tried ("taskbar", "taskbar kept"), never a word inside it
     // ("as" in "running as root" is not the assembler).
     std::vector<std::size_t> run;
+    // Grammar: right after a pronoun, a modal or "to", a word is what the person does, not a program ("how can i
+    // find out", "help me find"): the run's first word is not tried as a name on its own.
+    auto verb_slot = [&](std::size_t i) {
+        static const std::set<std::string> before = {"i", "you", "we", "they", "me", "to", "can", "could", "should", "would",
+                                                     "will", "please", "cant", "can't", "cannot", "help"};
+        return i > 0 && before.count(tokens[i - 1].lower) > 0;
+    };
     auto close_run = [&] {
+        while (!run.empty() && verb_slot(run[0])) run.erase(run.begin());  // "i find" in "can i find out": not names, by name or meaning
         if (!run.empty() && q.cls[run[0]] == kUnknown) q.exact.push_back(run[0]);
         for (std::size_t n = 1; n <= 3 && n <= run.size(); ++n) {
             std::vector<std::size_t> part(run.begin(), run.begin() + std::ptrdiff_t(n));

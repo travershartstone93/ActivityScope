@@ -135,7 +135,7 @@ bool Kinds::load(const std::string& dir, const std::string& cache, const std::st
     }
     if (im.phrasing.empty() || !im.model.load_model(model_dir)) return false;
     im.d = im.model.dim();
-    const int64_t stamp = stamp_of(dir + "/phrasings.tsv");
+    const int64_t stamp = stamp_of(dir + "/phrasings.tsv") + 7919 * stamp_of(model_dir + "/model.onnx");  // one file, one model
     const std::string vec = cache + "/phrasings.vec";
     if (rebuild || !im.read_cache(vec, stamp)) {
         // Every phrasing through the model once; a few seconds per thousand.
