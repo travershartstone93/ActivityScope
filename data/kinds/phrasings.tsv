@@ -5941,16 +5941,16 @@ programs.installed.now	show me the installed programs
 programs.installed.now	whats installed on here
 programs.installed.now	how many apps are installed
 programs.installed.now	what programs are available on this laptop
-sound.value.none	is the volume muted
-sound.value.none	is volume on or off
-sound.value.none	is the sound muted
-sound.value.none	how loud is the volume
-sound.value.none	what is the volume set to
-sound.value.none	is the audio on
-sound.value.none	is sound turned off
-sound.value.none	are the speakers muted
-sound.value.none	whats the volume level
-sound.value.none	is the sound working
+sound.value.now	is the volume muted
+sound.value.now	is volume on or off
+sound.value.now	is the sound muted
+sound.value.now	how loud is the volume
+sound.value.now	what is the volume set to
+sound.value.now	is the audio on
+sound.value.now	is sound turned off
+sound.value.now	are the speakers muted
+sound.value.now	whats the volume level
+sound.value.now	is the sound working
 programs.owner.list.now	which running processes are not owned by root
 programs.owner.list.now	what is running as root right now
 programs.owner.list.now	which processes run under my user
@@ -6392,24 +6392,24 @@ programs.installed.now	is there a list of installed apps
 programs.installed.now	what applications do i have installed
 programs.installed.now	which programs are on this computer
 programs.installed.now	what is installed here
-sound.value.none	is the sound on
-sound.value.none	what is the volume at
-sound.value.none	is the audio muted
-sound.value.none	are the speakers on
-sound.value.none	is the mic muted
-sound.value.none	what is the sound level
-sound.value.none	is the laptop muted
-sound.value.none	how high is the volume
-sound.value.none	is the audio working
-sound.value.none	what volume is it set to
-sound.value.none	is the speaker muted
-sound.value.none	is the sound up or down
-sound.value.none	is the output muted
-sound.value.none	what is the current volume
-sound.value.none	is my audio on
-sound.value.none	are the speakers muted right now
-sound.value.none	is the sound off
-sound.value.none	what is the volume level now
+sound.value.now	is the sound on
+sound.value.now	what is the volume at
+sound.value.now	is the audio muted
+sound.value.now	are the speakers on
+sound.value.now	is the mic muted
+sound.value.now	what is the sound level
+sound.value.now	is the laptop muted
+sound.value.now	how high is the volume
+sound.value.now	is the audio working
+sound.value.now	what volume is it set to
+sound.value.now	is the speaker muted
+sound.value.now	is the sound up or down
+sound.value.now	is the output muted
+sound.value.now	what is the current volume
+sound.value.now	is my audio on
+sound.value.now	are the speakers muted right now
+sound.value.now	is the sound off
+sound.value.now	what is the volume level now
 programs.owner.list.now	which processes run as my user
 programs.owner.list.now	which processes are mine
 programs.owner.list.now	what runs under other accounts
@@ -6425,3 +6425,168 @@ programs.owner.list.now	which user owns the most processes
 programs.owner.list.now	what processes run under my name
 programs.owner.list.now	list root owned processes
 programs.owner.list.now	which programs are not running as root
+startup.cause.reboot	what caused the last shutdown
+startup.cause.reboot	why did the laptop shut down last time
+startup.cause.reboot	why did my computer turn off
+startup.cause.reboot	what made it power off last time
+startup.cause.reboot	why did it shut down
+startup.cause.reboot	reason for the last shutdown
+startup.cause.reboot	what happened before the last shutdown
+startup.cause.reboot	why did the pc reboot last night
+startup.cause.reboot	what caused the restart
+startup.cause.reboot	why did it restart on its own
+startup.cause.reboot	what triggered the last reboot
+startup.cause.reboot	why did my laptop turn itself off
+startup.cause.reboot	what shut the machine down yesterday
+startup.cause.reboot	explain the last shutdown
+startup.cause.reboot	why did the system go down last time
+startup.cause.reboot	what was going on right before it shut down
+startup.cause.reboot	why did it power down
+startup.cause.reboot	cause of the last restart
+startup.cause.reboot	did i shut it down or did it die
+startup.cause.reboot	what killed the session last night
+startup.cause.reboot	why did the laptop switch off by itself
+startup.cause.reboot	what caused the machine to go off
+startup.cause.reboot	what caused the last reboot
+startup.cause.reboot	why did my laptop shut down
+programs.open.cause.now	why wont firefox open
+programs.open.cause.now	why won't steam open
+programs.open.cause.now	firefox wont start
+programs.open.cause.now	steam isn't opening
+programs.open.cause.now	why doesn't discord launch
+programs.open.cause.now	nothing happens when i click blender
+programs.open.cause.now	why cant i open dolphin
+programs.open.cause.now	chrome refuses to open
+programs.open.cause.now	why isn't firefox starting
+programs.open.cause.now	the app wont launch why
+programs.open.cause.now	why does steam fail to start
+programs.open.cause.now	blender won't come up
+programs.open.cause.now	firefox doesn't open anymore
+programs.open.cause.now	why won't my browser open
+programs.open.cause.now	kate won't open what's wrong
+programs.open.cause.now	why is spotify not opening
+programs.open.cause.now	discord does nothing when i start it
+programs.open.cause.now	why can't vlc start
+programs.open.cause.now	obs won't launch, why
+programs.open.cause.now	why won't the game open
+programs.open.cause.now	what's stopping firefox from opening
+programs.open.cause.now	why does krita refuse to launch
+programs.open.cause.now	why isn't the terminal opening
+programs.open.cause.now	gimp won't start up
+programs.open.cause.now	why wont haruna open
+gpu.model.now	what model is currently loaded
+gpu.model.now	which model is loaded right now
+gpu.model.now	what llm is running
+gpu.model.now	is a model loaded in vram
+gpu.model.now	which ai model is in memory
+gpu.model.now	what model does ollama have loaded
+gpu.model.now	what's loaded in ollama
+gpu.model.now	is ollama holding a model
+gpu.model.now	which language model is running
+gpu.model.now	what model is on the gpu
+gpu.model.now	is any model loaded
+gpu.model.now	what model is llama-server running
+gpu.model.now	which model is taking up the vram
+gpu.model.now	what model is active
+gpu.model.now	is qwen loaded
+gpu.model.now	what's the loaded model
+gpu.model.now	which llm is in vram at the moment
+gpu.model.now	what model is being served
+gpu.model.now	do i have a model loaded
+gpu.model.now	what ai model is running on the gpu
+gpu.model.now	which model did ollama load
+gpu.model.now	what model is resident in memory
+gpu.model.now	what model is loaded
+disk.folder.list.now	what files are in my downloads folder
+disk.folder.list.now	what's in my downloads
+disk.folder.list.now	list the files in downloads
+disk.folder.list.now	what is in the desktop folder
+disk.folder.list.now	show me what's in my documents folder
+disk.folder.list.now	what files are in ~/Downloads
+disk.folder.list.now	whats inside my pictures folder
+disk.folder.list.now	how many files are in downloads
+disk.folder.list.now	what's sitting in my downloads folder
+disk.folder.list.now	what do i have in documents
+disk.folder.list.now	what is in the videos folder
+disk.folder.list.now	list my desktop folder
+disk.folder.list.now	what files are on my desktop
+disk.folder.list.now	whats in /tmp
+disk.folder.list.now	show the contents of my downloads
+disk.folder.list.now	what have i got in my music folder
+disk.folder.list.now	what's in the projects folder
+disk.folder.list.now	how much is in my downloads folder
+disk.folder.list.now	what's the newest file in downloads
+disk.folder.list.now	biggest files in my downloads folder
+disk.folder.list.now	what's in ~/Desktop
+disk.folder.list.now	what files are in that folder
+disk.folder.list.now	what files are in x folder
+disk.find.which.now	give full path to history.db
+disk.find.which.now	find location of spine-audit.md
+disk.find.which.now	where is history.db
+disk.find.which.now	what's the full path of config.fish
+disk.find.which.now	find the file notes.txt
+disk.find.which.now	where is my resume.pdf
+disk.find.which.now	locate conky.conf
+disk.find.which.now	where did i put budget.xlsx
+disk.find.which.now	path to the activityscope database
+disk.find.which.now	where on disk is settings.json
+disk.find.which.now	find where kinds.tsv is
+disk.find.which.now	what folder is report.docx in
+disk.find.which.now	where is the file called invoice.pdf
+disk.find.which.now	full path for bashrc
+disk.find.which.now	find my cv file
+disk.find.which.now	where's the yacht manager folder
+disk.find.which.now	locate the folder named ActivityScope
+disk.find.which.now	which directory has main.cpp
+disk.find.which.now	find a file called todo.md
+disk.find.which.now	where is the ssh config file
+disk.find.which.now	show me the path to the downloads folder
+disk.find.which.now	where does the hindsight data live
+disk.find.which.now	find location of x file or folder
+disk.find.which.now	give full path to x file
+programs.pid.identity.now	explain pid 2310407
+programs.pid.identity.now	what is pid 1234
+programs.pid.identity.now	what is process 4521 doing
+programs.pid.identity.now	who started pid 998
+programs.pid.identity.now	tell me about pid 31337
+programs.pid.identity.now	what program is pid 2048
+programs.pid.identity.now	explain process 7777
+programs.pid.identity.now	pid 1455323 what is it
+programs.pid.identity.now	what's running as pid 4095406
+programs.pid.identity.now	describe pid 600
+programs.pid.identity.now	what does pid 1200 belong to
+programs.pid.identity.now	which program owns pid 8080
+programs.pid.identity.now	what is pid 42 and why is it running
+programs.pid.identity.now	what's pid 1497737
+programs.pid.identity.now	explain what process 2427232 is
+programs.pid.identity.now	what launched pid 2310407
+programs.pid.identity.now	details on pid 774
+programs.pid.identity.now	what is pid 1
+programs.pid.identity.now	whats the deal with pid 2238647
+programs.pid.identity.now	pid 3853342 explain
+programs.pid.identity.now	how long has pid 1497050 been running
+programs.pid.identity.now	explain pid x
+trust.identity	is pid 1234 weird
+trust.identity	is process 4521 suspicious
+trust.identity	should i trust pid 3000
+trust.identity	is pid 998 safe
+trust.identity	check pid 2310407 with weird
+trust.identity	run weird on pid 1200
+trust.identity	is pid 4095406 legit
+trust.identity	anything weird about pid 600
+trust.identity	is pid x weird
+sound.value.now	is volume muted
+sound.value.now	is the sound muted
+sound.value.now	am i muted
+sound.value.now	what's the volume at
+sound.value.now	is the volume on
+sound.value.now	how loud is the volume set
+sound.value.now	is the audio muted right now
+sound.value.now	what volume level is set
+sound.value.now	is sound off
+sound.value.now	which speaker is in use
+sound.value.now	what's the current volume
+sound.value.now	is the laptop muted
+sound.value.now	volume level?
+sound.value.now	did i leave the sound muted
+sound.value.now	is audio on or muted

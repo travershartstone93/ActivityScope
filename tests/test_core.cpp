@@ -50,6 +50,15 @@ namespace {
 
 int failures = 0, checks = 0;
 
+// The matcher's model for the tests: ASK_EMBED_MODEL, else the installed ask's own choice (the catalogue-tuned copy of
+// bge-small when present, else the untouched model), so the suite tests what runs.
+std::string test_model_dir() {
+    if (const char* em = std::getenv("ASK_EMBED_MODEL")) return em;
+    const char* home = std::getenv("HOME");
+    const std::string base = std::string(home ? home : "") + "/.local/share/unllm/models/";
+    return access((base + "bge-small-tuned/model.onnx").c_str(), R_OK) == 0 ? base + "bge-small-tuned" : base + "bge-small-en-v1.5";
+}
+
 #define CHECK(cond)                                                              \
     do {                                                                         \
         ++checks;                                                                \
@@ -1773,9 +1782,7 @@ void test_kinds() {
     CHECK(filed["service failures since yesterday"] == "startup.which.window");
     CHECK(filed["how many times has my laptop crashed and rebooted this week"] == "crashes.yesno.window.system");
 
-    const char* em = std::getenv("ASK_EMBED_MODEL");
-    const char* home = std::getenv("HOME");
-    const std::string model = em ? em : std::string(home ? home : "") + "/.local/share/unllm/models/bge-small-en-v1.5";
+    const std::string model = test_model_dir();
     if (access((model + "/model.onnx").c_str(), R_OK) != 0) {
         std::puts("  no embedding model: matcher checks skipped");
         CHECK(std::getenv("ASCORE_ALLOW_NO_MODEL") != nullptr);  // a skip must be asked for, never silent
@@ -1883,7 +1890,7 @@ void test_kinds() {
     CHECK(lands("what filesystem is mounted at /", {"identity.disk"}));
     CHECK(lands("what percent of the hard drive is used", {"disk.space.value.now"}));
     CHECK(lands("what apps are currently open", {"programs.list.now"}));
-    CHECK(lands("is the volume muted", {"sound.value.none"}));
+    CHECK(lands("is the volume muted", {"sound.value.now"}));
     // What the records cannot hold: BIOS settings, monitors and screens, reminders (ask answers, it doesn't act).
     CHECK(lands("bios settings changed", {"identity.bios.settings.none"}));
     CHECK(lands("did someone mess with the uefi settings", {"identity.bios.settings.none"}));
@@ -1926,9 +1933,7 @@ void test_kinds() {
 void test_read_back() {
     std::puts("read-back gate");
     namespace fs = std::filesystem;
-    const char* home = std::getenv("HOME");
-    const char* em = std::getenv("ASK_EMBED_MODEL");
-    const std::string model_dir = em ? em : std::string(home ? home : "") + "/.local/share/unllm/models/bge-small-en-v1.5";
+    const std::string model_dir = test_model_dir();
     if (access((model_dir + "/model.onnx").c_str(), R_OK) != 0) {
         std::puts("  no embedding model: read-back checks skipped");
         CHECK(std::getenv("ASCORE_ALLOW_NO_MODEL") != nullptr);  // a skip must be asked for, never silent
@@ -1958,8 +1963,7 @@ void test_read_back() {
         a.force_reading(kind);
         return a.ask(q, now);
     };
-    const std::string said = "I took this as a question about ";
-    const std::string invite = "; if you meant something else, ask with more detail.";
+    const std::string said = "I took this as a question about ";  // never said any more; the gate only marks read_back
     // Row 68: spending, matched to the swap's use over a window. The read-back names the kind from the catalogue (its
     // topic, its answer's form, its time) and comes first; the answer follows as it was.
     // Row 68: spending, nearest to the swap's use at 0.80 with no topic read: nothing fits, so the honest reply with the
@@ -1979,9 +1983,9 @@ void test_read_back() {
     CHECK(!ask("how much did i spend on the amazon app last month", at(13, 59), "memory.swap.value.window").read_back);
     const as::AskResult monitor = ask("did the external monitor disconnect while i was away from the desk, dock keeps dropping it", at(13, 59));
     CHECK(monitor.refused && !monitor.read_back && monitor.answer.find(said) == std::string::npos);
-    // Its place: before the other sentences on how the question was taken (row 98's "this morning" asked at 02:38).
+    // A doubted reading is answered as read, the doubt kept only as a mark (row 98's "this morning" asked at 02:38).
     const as::AskResult early = ask("did my sister text me this morning on her phone", at(2, 38));
-    CHECK(early.refused || (early.read_back && early.scope.size() >= 2 && early.scope[0].rfind(said, 0) == 0));
+    CHECK(early.refused || (early.read_back && early.answer.find(said) == std::string::npos));
     fs::remove_all(dir);
 }
 
@@ -2081,9 +2085,7 @@ void test_names() {
     tmv.tm_year = 2026 - 1900; tmv.tm_mon = 9; tmv.tm_mday = 23; tmv.tm_hour = 0; tmv.tm_min = 1; tmv.tm_sec = 30; tmv.tm_isdst = -1;
     const int64_t now = int64_t(std::mktime(&tmv));  // the clock of the 50-question test
 
-    const char* home = std::getenv("HOME");
-    const char* em = std::getenv("ASK_EMBED_MODEL");
-    const std::string model_dir = em ? em : std::string(home ? home : "") + "/.local/share/unllm/models/bge-small-en-v1.5";
+    const std::string model_dir = test_model_dir();
     unllm::Meaning model;
     CHECK(model.load_model(model_dir));  // the same bge-small the kinds matcher uses
     sqlite3* db = nullptr;
@@ -2211,9 +2213,7 @@ void test_names() {
 void test_records_data() {
     std::puts("records answers");
     namespace fs = std::filesystem;
-    const char* home = std::getenv("HOME");
-    const char* em = std::getenv("ASK_EMBED_MODEL");
-    const std::string model_dir = em ? em : std::string(home ? home : "") + "/.local/share/unllm/models/bge-small-en-v1.5";
+    const std::string model_dir = test_model_dir();
     if (access((model_dir + "/model.onnx").c_str(), R_OK) != 0) {
         std::puts("  no embedding model: skipped");
         CHECK(std::getenv("ASCORE_ALLOW_NO_MODEL") != nullptr);  // a skip must be asked for, never silent
@@ -2575,8 +2575,7 @@ void test_records_log() {
     std::puts("records: crashes, failed units, sleep, boots, updates, trust, config");
     namespace fs = std::filesystem;
     const std::string home = std::getenv("HOME") ? std::getenv("HOME") : "";
-    const char* em = std::getenv("ASK_EMBED_MODEL");
-    const std::string model = em ? em : home + "/.local/share/unllm/models/bge-small-en-v1.5";
+    const std::string model = test_model_dir();
     if (access((model + "/model.onnx").c_str(), R_OK) != 0) {
         std::puts("  no embedding model: records checks skipped");
         CHECK(std::getenv("ASCORE_ALLOW_NO_MODEL") != nullptr);  // a skip must be asked for, never silent
@@ -2798,9 +2797,7 @@ void test_records_log() {
 void test_event_answers() {
     std::puts("event answers");
     namespace fs = std::filesystem;
-    const char* home = std::getenv("HOME");
-    const char* em = std::getenv("ASK_EMBED_MODEL");
-    const std::string model_dir = em ? em : std::string(home ? home : "") + "/.local/share/unllm/models/bge-small-en-v1.5";
+    const std::string model_dir = test_model_dir();
     if (access((model_dir + "/model.onnx").c_str(), R_OK) != 0) {
         std::puts("  no embedding model: event answer checks skipped");
         CHECK(std::getenv("ASCORE_ALLOW_NO_MODEL") != nullptr);  // a skip must be asked for, never silent
@@ -3037,11 +3034,11 @@ void test_event_answers() {
     // 5, Q18: the fan's peak moments, and whether the program ran at them.
     {
         const std::string no = said("was firefox open when the fan hit its peak yesterday");
-        CHECK(has(no, "ask with more detail. No. The fan peaked") && has(no, "85%") && has(no, "09:21") && has(no, "10:08"));
-        // A right answer the read-back gate touches (the analyzer names no topic, heat as a whole is at 0.82): the
-        // read-back first, then the answer as before.
+        CHECK(no.rfind("No. The fan peaked", 0) == 0 && has(no, "85%") && has(no, "09:21") && has(no, "10:08"));
+        // A right answer the read-back gate touches (the analyzer names no topic, heat as a whole is at 0.82): answered
+        // as read, with no sentence about how it was taken.
         const std::string yes = said("was claude open when the fan hit its peak yesterday");
-        CHECK(yes.rfind("I took this as a question about heat and the fans (", 0) == 0 && has(yes, "ask with more detail. Yes. The fan peaked"));
+        CHECK(yes.rfind("Yes. The fan peaked", 0) == 0);
     }
     // 6, Q19: memory ranked by memory in the hour asked (right since the time fix: a guard).
     CHECK(has(said("what was the biggest memory hog between 7 and 8 yesterday morning"), "lama-server used the most memory"));
@@ -3103,9 +3100,7 @@ void test_event_answers() {
 void test_answer_shapes() {
     std::puts("answer shapes: either/or memory, story moments, startup additions");
     namespace fs = std::filesystem;
-    const char* home = std::getenv("HOME");
-    const char* em = std::getenv("ASK_EMBED_MODEL");
-    const std::string model_dir = em ? em : std::string(home ? home : "") + "/.local/share/unllm/models/bge-small-en-v1.5";
+    const std::string model_dir = test_model_dir();
     if (access((model_dir + "/model.onnx").c_str(), R_OK) != 0) {
         std::puts("  no embedding model: answer shape checks skipped");
         CHECK(std::getenv("ASCORE_ALLOW_NO_MODEL") != nullptr);  // a skip must be asked for, never silent
@@ -3349,9 +3344,7 @@ void test_answer_shapes() {
 void test_catalogue_kinds() {
     std::puts("catalogue kinds: session, admin, first runs and connections, process counts, a moment, the fan, missing data");
     namespace fs = std::filesystem;
-    const char* home = std::getenv("HOME");
-    const char* em = std::getenv("ASK_EMBED_MODEL");
-    const std::string model_dir = em ? em : std::string(home ? home : "") + "/.local/share/unllm/models/bge-small-en-v1.5";
+    const std::string model_dir = test_model_dir();
     if (access((model_dir + "/model.onnx").c_str(), R_OK) != 0) {
         std::puts("  no embedding model: catalogue kind checks skipped");
         CHECK(std::getenv("ASCORE_ALLOW_NO_MODEL") != nullptr);  // a skip must be asked for, never silent
@@ -3700,9 +3693,7 @@ void test_catalogue_kinds() {
 void test_window_answers() {
     std::puts("window answers: runs, readings, hours, scripts");
     namespace fs = std::filesystem;
-    const char* home = std::getenv("HOME");
-    const char* em = std::getenv("ASK_EMBED_MODEL");
-    const std::string model_dir = em ? em : std::string(home ? home : "") + "/.local/share/unllm/models/bge-small-en-v1.5";
+    const std::string model_dir = test_model_dir();
     if (access((model_dir + "/model.onnx").c_str(), R_OK) != 0) {
         std::puts("  no embedding model: window answer checks skipped");
         CHECK(std::getenv("ASCORE_ALLOW_NO_MODEL") != nullptr);  // a skip must be asked for, never silent
@@ -4286,8 +4277,7 @@ void test_records_n50() {
     std::puts("records answers of the new 50");
     namespace fs = std::filesystem;
     const std::string home = std::getenv("HOME") ? std::getenv("HOME") : "";
-    const char* em = std::getenv("ASK_EMBED_MODEL");
-    const std::string model = em ? em : home + "/.local/share/unllm/models/bge-small-en-v1.5";
+    const std::string model = test_model_dir();
     if (access((model + "/model.onnx").c_str(), R_OK) != 0) {
         std::puts("  no embedding model: skipped");
         CHECK(std::getenv("ASCORE_ALLOW_NO_MODEL") != nullptr);  // a skip must be asked for, never silent
@@ -4616,8 +4606,7 @@ void test_live_t95() {
     std::puts("live answers and measures of the traced 95");
     namespace fs = std::filesystem;
     const std::string home = std::getenv("HOME") ? std::getenv("HOME") : "";
-    const char* em = std::getenv("ASK_EMBED_MODEL");
-    const std::string model = em ? em : home + "/.local/share/unllm/models/bge-small-en-v1.5";
+    const std::string model = test_model_dir();
     if (access((model + "/model.onnx").c_str(), R_OK) != 0) {
         std::puts("  no embedding model: skipped");
         CHECK(std::getenv("ASCORE_ALLOW_NO_MODEL") != nullptr);  // a skip must be asked for, never silent
@@ -4921,8 +4910,7 @@ void test_asked_leads() {
     std::puts("leads that answer the question asked");
     namespace fs = std::filesystem;
     const std::string home = std::getenv("HOME") ? std::getenv("HOME") : "";
-    const char* em = std::getenv("ASK_EMBED_MODEL");
-    const std::string model = em ? em : home + "/.local/share/unllm/models/bge-small-en-v1.5";
+    const std::string model = test_model_dir();
     if (access((model + "/model.onnx").c_str(), R_OK) != 0) {
         std::puts("  no embedding model: skipped");
         CHECK(std::getenv("ASCORE_ALLOW_NO_MODEL") != nullptr);  // a skip must be asked for, never silent
@@ -5054,12 +5042,148 @@ std::string run_cmd(const std::string& cmd) {
 // The log and identity answers of the traced 95 (records area), against rows shaped like the records copied on
 // 2026-10-23 at 13:58: config snapshots, the software and admin log, Wi-Fi drops and sleeps, log-ins, the lid and
 // the charger, programs opened by hand, the free space over the week, the device log.
+// The questions the user listed on 2026-10-25 as ones ask must get right every time, on a small set of records and live:
+// a program not running now answered from its last run, a crash question with nothing in the window answered from the
+// history, a launch that won't happen, the last hot spell, the last shutdown, the loaded model, a folder's contents, a
+// file's path, a process number, weird on a pid, the sound, the network, memory, video memory, the largest file. Live
+// answers are checked for their shape, since the machine they run on varies.
+void test_must_nail() {
+    std::puts("the must-nail questions");
+    namespace fs = std::filesystem;
+    const std::string model_dir = test_model_dir();
+    if (access((model_dir + "/model.onnx").c_str(), R_OK) != 0) {
+        std::puts("  no embedding model: skipped");
+        CHECK(std::getenv("ASCORE_ALLOW_NO_MODEL") != nullptr);  // a skip must be asked for, never silent
+        return;
+    }
+    const std::string dir = fs::temp_directory_path() / ("as-nail-" + std::to_string(getpid()));
+    fs::create_directories(dir);
+    const std::string dbp = dir + "/h.db";
+    std::tm tmv{};
+    tmv.tm_year = 2026 - 1900; tmv.tm_mon = 9; tmv.tm_mday = 13; tmv.tm_hour = 21; tmv.tm_min = 30; tmv.tm_isdst = -1;
+    const double now = double(std::mktime(&tmv));
+    {
+        as::Store st(dbp);
+        as::Event e;
+        e.start = now - 2 * 3600;
+        e.end = e.start + 300;
+        e.kinds = as::KindCpu | as::KindHeat;
+        e.peak_temp = 96;
+        e.peak_cpu = 61;
+        e.min_margin = 4;
+        e.summary = "CPU peaked at 61%, the CPU reached 96 C, mostly blender";
+        as::Culprit c;
+        c.name = "blender";
+        c.share = 0.74;
+        e.culprits.push_back(c);
+        st.add_event(e);
+        // Blender ran two and a half hours ago and ended; kodi crashed three days ago; neither runs now.
+        as::ProcessRecord b{3999999, now - 9000, now - 8000, "blender", "/usr/bin/blender", "blender", "whisper", "", "systemd", 1, 50, 300000000};
+        as::ProcessRecord k{3999998, now - 3 * 86400, now - 3 * 86400 + 600, "kodi", "/usr/bin/kodi", "kodi", "whisper", "", "systemd", 1, 20, 0};
+        st.add_procs({b, k});
+        st.add_log({{now - 3 * 86400 + 600, "problems", "kodi crashed",
+                     "kernel: kodi[3999998]: segfault at 14 ip 00007f051adae4ef sp 00007ffe8c1d1f20 error 4 in libkodi.so.21[ce4ef,7f051ad07000+c6000] likely on CPU 1"}});
+    }
+    char exe[4096];
+    const ssize_t len = readlink("/proc/self/exe", exe, sizeof exe - 1);
+    const std::string binary = len > 0 ? std::string(exe, std::size_t(len)) : std::string("./ascore_tests");
+    const std::string bin_dir = binary.substr(0, binary.rfind('/'));
+    const std::string cache = bin_dir + "/kinds-cache";
+    fs::create_directories(cache);
+    auto ask = [&](const std::string& q) {
+        as::Ask a;
+        CHECK(a.open(dbp));
+        a.load_language("vendor/unllm/data/synonyms.txt", "vendor/unllm/data/vectors.bin", "vendor/unllm/data/banter.txt",
+                        "vendor/unllm/data/rewrites.txt");
+        a.load_conversation("vendor/unllm/data/followups.txt", "vendor/unllm/data/chatspeak.txt");
+        CHECK(a.load_kinds("data/kinds", cache, model_dir));
+        const as::AskResult r = a.ask(q, int64_t(now));
+        std::printf("  [%s] %s -> %s\n", r.branch.c_str(), q.c_str(), r.answer.substr(0, 220).c_str());
+        return r;
+    };
+    auto has = [](const as::AskResult& r, const char* s) { return r.answer.find(s) != std::string::npos; };
+    const std::string pid = std::to_string(getpid());
+    // A program not running now: its last run stands in, with its CPU time and memory.
+    {
+        const as::AskResult r = ask("why is blender slow");
+        CHECK(r.branch == "live:slow:program" && has(r, "blender isn't running right now. It last ran") && has(r, "of CPU time") && has(r, "of memory"));
+    }
+    // The present said outright stays about now, whatever past example sits near.
+    {
+        const as::AskResult r = ask("is blender using a lot of memory");
+        CHECK(r.when == "now" && has(r, "blender isn't running right now"));
+    }
+    // A why about a crash with none in the window: the history, or that there is none and the last run.
+    {
+        const as::AskResult r = ask("why did blender crash");
+        CHECK(r.branch == "records:crashes" && has(r, "None is on record at all") && has(r, "It last ran"));
+        const as::AskResult k = ask("why did kodi crash");
+        CHECK(k.branch == "records:crashes" && has(k, "Its last crash on record was") && has(k, "a segfault in libkodi.so.21"));
+    }
+    // Won't open: not running, not started in the last hour, and its last run.
+    {
+        const as::AskResult r = ask("why won't blender open");
+        CHECK(r.branch == "records:wont-open" && has(r, "blender isn't running, and it hasn't been started in the last hour") && has(r, "It last ran"));
+    }
+    // Heat: hot now, or the last hot spell from the records with what drove it.
+    {
+        const as::AskResult r = ask("why is the laptop so hot");
+        CHECK(r.branch == "live:heat" && (has(r, "which is hot") || (has(r, "The last hot spell was on") && has(r, "96 C") && has(r, "blender"))));
+    }
+    // The last shutdown: from this machine's own boot list, whatever it holds.
+    CHECK(ask("what caused the last shutdown").branch.rfind("records:shutdown", 0) == 0);
+    // The loaded model, live.
+    {
+        const as::AskResult r = ask("what model is currently loaded");
+        CHECK(r.branch == "records:model" && (has(r, "loaded right now") || has(r, "Running right now")));
+    }
+    // A folder's contents, by its path.
+    {
+        fs::create_directories(dir + "/box");
+        for (const char* f : {"a.txt", "b.txt", "c.txt"}) std::ofstream(dir + "/box/" + f) << "x";
+        const as::AskResult r = ask("what files are in " + dir + "/box");
+        CHECK(r.branch == "records:folder" && has(r, "holds 3 items") && has(r, "a.txt"));
+    }
+    // A file found by name, in a folder under home (the build folder; a file index may or may not have it).
+    if (const char* home = std::getenv("HOME"); home && bin_dir.rfind(std::string(home) + "/", 0) == 0) {
+        const std::string probe = bin_dir + "/zq-probe-" + pid + ".txt";
+        std::ofstream(probe) << "x";
+        const as::AskResult r = ask("where is zq-probe-" + pid + ".txt");
+        fs::remove(probe);
+        CHECK(r.branch == "records:find" && has(r, "zq-probe-") && has(r, "is at"));
+    }
+    // A process number: this test's own process live, and one only the records hold.
+    {
+        const as::AskResult r = ask("explain pid " + pid);
+        CHECK(r.branch == "records:pid" && has(r, "is ascore_tests") && has(r, "Right now it uses"));
+        const as::AskResult old = ask("explain pid 3999999");
+        CHECK(old.branch == "records:pid" && (has(old, "The records show it was blender") || has(old, "Process 3999999 is")));
+        CHECK(ask("is pid " + pid + " weird").branch == "trust:pid");
+    }
+    // The sound, the network, memory and video memory: live, with the asked shape.
+    {
+        const as::AskResult s = ask("is the volume muted");
+        CHECK(s.branch == "records:sound" || s.branch == "records:sound-none");
+        const as::AskResult n = ask("what is causing network slowdown");
+        CHECK(n.branch == "records:network-cause" && has(n, "The machine is moving"));
+        const as::AskResult m = ask("what is causing RAM to fill up");
+        CHECK(m.branch == "live:memory" && has(m, "Memory use is at"));
+        const as::AskResult v = ask("why is VRAM full");
+        CHECK(v.branch == "live:gpu" && (has(v, "video memory") || has(v, "graphics card")));
+    }
+    // The largest file: the file leads, the folders follow (a scan of the home folder, capped at 20 s).
+    {
+        const as::AskResult r = ask("what is the largest file on disk");
+        CHECK(r.branch == "space:which" && r.answer.rfind("The largest single file is", 0) == 0 && has(r, "In your home folder"));
+    }
+    fs::remove_all(dir);
+}
+
 void test_records_t95() {
     std::puts("records answers of the traced 95");
     namespace fs = std::filesystem;
     const std::string home = std::getenv("HOME") ? std::getenv("HOME") : "";
-    const char* em = std::getenv("ASK_EMBED_MODEL");
-    const std::string model = em ? em : home + "/.local/share/unllm/models/bge-small-en-v1.5";
+    const std::string model = test_model_dir();
     if (access((model + "/model.onnx").c_str(), R_OK) != 0) {
         std::puts("  no embedding model: skipped");
         CHECK(std::getenv("ASCORE_ALLOW_NO_MODEL") != nullptr);  // a skip must be asked for, never silent
@@ -5374,6 +5498,7 @@ int main() {
     test_live_t95();
     test_asked_leads();
     test_records_t95();
+    test_must_nail();
     test_event_answers();
     test_answer_shapes();
     test_catalogue_kinds();

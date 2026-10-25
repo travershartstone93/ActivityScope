@@ -55,14 +55,13 @@ what it is doing ("312,000 of 470,000 articles", "posts: 1.2 of 3.4 GB",
 figures to small files in `~/.local/share/unllm/progress`, and removes them
 when it finishes. A watch window restarts itself when the tool is updated.
 
-**In the system tray.** On KDE Plasma, `tools/progress_tray.py` shows the
-same jobs as progress items in the tray, like a file copy in Dolphin: one
-appears when a job starts and closes when it ends ("stopped" if its process
-died). Install it once with `cp tools/systemd/unllm-progress.desktop
-~/.local/share/applications/`, `cp tools/systemd/unllm-progress-tray.service
-~/.config/systemd/user/` and `systemctl --user enable --now
-unllm-progress-tray`. Any long script can join in through
-`tools/taskprogress.py`.
+**In the system tray.** On KDE Plasma, the machine's progress tray
+(`~/.local/lib/taskprogress/progress_tray.py`, user service `progress-tray`)
+shows the same jobs as progress items in the tray, like a file copy in
+Dolphin: one appears when a job starts and closes when it ends ("stopped" if
+its process died). It is not part of this repo. `tools/taskprogress.py` here
+only loads that helper, so the scripts in `tools/` and `bench/` report their
+own progress with `from taskprogress import Task`.
 
 Packs go to `~/.local/share/unllm/packs`. A build happens in a separate
 `NAME.building` folder and replaces the installed pack in one step, so

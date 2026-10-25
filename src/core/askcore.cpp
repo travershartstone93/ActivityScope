@@ -112,6 +112,8 @@ std::string health_now(const Snapshot& s, double low_battery);                  
 double low_battery_level(const std::string& etc);                               // the level the system calls low
 std::string right_before(sqlite3* db, int64_t t);                               // what the machine did right before t
 std::string stop_story(sqlite3* db, int64_t t);                                 // the minutes before a stop at t
+std::string last_run_text(sqlite3* db, const std::string& program, int64_t now);  // " It last ran ...": a program's latest run
+std::vector<Row> series(sqlite3* db, const std::string& column, const std::string& hourly, int64_t from, int64_t to);  // per-second readings, hourly beyond them
 
 std::vector<Row> query(sqlite3* db, const std::string& sql,
                        const std::vector<int64_t>& binds,
@@ -790,6 +792,7 @@ AskResult Ask::ask_once(const std::string& question, int64_t now, const std::str
     AskResult res;
     remember_ = fresh_ = false;
     when_now = now;
+    question_ = question;
     if (!db_) {
         res.body = "I can't answer that: the history database is not open.";
         res.refused = true;
@@ -850,6 +853,18 @@ AskResult Ask::ask_once(const std::string& question, int64_t now, const std::str
                             if (i < km.runner_phrasings.size()) km.phrasing = km.runner_phrasings[i];
                             break;
                         }
+        // A yes-or-no question with no why in it ("was firefox open when the fan hit its peak") is not asking for a
+        // cause: a "cause" kind nearest by wording gives way to the nearest kind of another form within a few hundredths.
+        if (force_kind.empty() && reading.form == Form::Polar && reading.wants != unllm::Wants::Cause)
+            if (const QuestionKind* k = kinds_.find(km.id); k && k->form == "a cause")
+                for (std::size_t i = 0; i < km.runners.size(); ++i) {
+                    const QuestionKind* o = kinds_.find(km.runners[i].first);
+                    if (!o || o->form == "a cause" || km.runners[i].second < km.score - 0.05f) continue;
+                    km.id = o->id;
+                    km.score = km.runners[i].second;
+                    if (i < km.runner_phrasings.size()) km.phrasing = km.runner_phrasings[i];
+                    break;
+                }
         // A file path in the question ("is ~/Downloads/x.AppImage safe") is about this machine, never "outside the records".
         const bool names_path = q.find(" /") != std::string::npos || q.find("~/") != std::string::npos || q.rfind("/", 0) == 0;
         if (const QuestionKind* k = kinds_.find(km.id); k && k->data == "missing" && !k->reply.empty() &&
@@ -901,8 +916,11 @@ AskResult Ask::ask_once(const std::string& question, int64_t now, const std::str
                 // clarify gate to decide ("how do i cook a steak" must still ask).
                 if (km.score >= kinds_.cutoff("understand", 0.80f)) reading.domain = std::max(reading.domain, double(km.score));
                 // A close match on a kind about a past window ("show me the memory spike during the game")
-                // outranks present tense; only words that say now ("right now", "currently") keep it live.
-                if (km.score >= kinds_.cutoff("understand", 0.80f) && k->window == "window" && !reading.window.live) reading.window.present = false;
+                // outranks a present tense the grammar only assumed; one said outright ("is firefox using a lot of
+                // memory", "does it ...") stays about now, as do words that say now ("right now", "currently").
+                if (km.score >= kinds_.cutoff("understand", 0.80f) && k->window == "window" && !reading.window.live &&
+                    !reading.window.present_marked)
+                    reading.window.present = false;
                 // The kind's answer form: a close "cause" kind is a why question, whatever the wording.
                 if (km.score >= kinds_.cutoff("understand", 0.80f) && k->form == "a cause") reading.wants = unllm::Wants::Cause;
                 // A close match on another topic outranks the words that read as "the machine itself"
@@ -992,6 +1010,7 @@ AskResult Ask::ask_once(const std::string& question, int64_t now, const std::str
                                              : "not stated";
         if (reading.window.shifted) out.span += " (moved back a day)";
         out.readings = readings;
+        if (!match_.id.empty()) out.nearest = match_.phrasing + fmt(" (%.3f)", match_.score);
     };
 
     // "what cpu do i have again" with no earlier talk of it is simply a question.
@@ -1181,6 +1200,9 @@ AskResult Ask::ask_once(const std::string& question, int64_t now, const std::str
                 std::string why;
                 if (ks->topic != k0->topic) why = "another topic";
                 else if (ks->data == "missing") why = "not recorded";
+                // A sibling well below the asked kind's own score is about something else in the same topic (the GPU's
+                // clocks under a question on its memory): not added.
+                else if (match_.runners[i].second < match_.score - kinds_.cutoff("sibling_gap", 0.06f)) why = "too far from the question (" + fmt("%.3f", match_.runners[i].second) + " against " + fmt("%.3f", match_.score) + ")";
                 else if (family(ks->form) == family(k0->form)) why = "the asked form";
                 else if (ks->window == (about_now ? "window" : "now")) why = "another time";  // a past question gets no "now" form
                 else if (std::find(order.begin(), order.end(), ks->form) == order.end()) why = "a form not added";
@@ -1220,14 +1242,21 @@ AskResult Ask::ask_once(const std::string& question, int64_t now, const std::str
                 const AskResult s = answers_from_records(ks->id) ? answer_records(ks->id, alt, now)
                                                                  : answer_reading(alt, unllm::tokenize(q), raw_tokens, question, now);
                 std::string why;
+                // The sibling's first sentence: up to the first "; " or ". " (a figure's decimal point is not an end).
+                std::size_t cut = std::string::npos;
+                for (std::size_t i = 0; i + 1 < s.body.size() && cut == std::string::npos; ++i)
+                    if ((s.body[i] == '.' || s.body[i] == ';') && s.body[i + 1] == ' ') cut = i;
+                if (cut == std::string::npos || cut < 20) cut = std::min<std::size_t>(60, s.body.size());
                 if (s.refused) why = "refused";
                 else if (s.undecided) why = "undecided";
                 else if (s.body.empty()) why = "nothing to say";
                 else if (s.branch == res.branch) why = "the same answer code (" + s.branch + ")";
                 else if (s.branch.find("none") != std::string::npos) why = "no records (" + s.branch + ")";
+                else if (s.branch.find("which") != std::string::npos || s.body.rfind("Which ", 0) == 0) why = "a question back";
+                else if (s.branch.rfind("live:", 0) == 0 && res.branch.rfind("live:", 0) != 0) why = "a live reading on a records answer";
                 else if (s.body.rfind("No ", 0) == 0) why = "a bare no";
                 else if (s.body.size() > 400) why = "too long";
-                else if (res.body.find(s.body.substr(0, 60)) != std::string::npos) why = "already said";
+                else if (res.body.find(s.body.substr(0, cut)) != std::string::npos) why = "already said";  // its first sentence is in the answer already
                 else {
                     // A form whose every figure and time the main answer already gives repeats it: left out.
                     static const std::regex figure("[0-9]+:[0-9]{2}|[0-9]+(?:[.,][0-9]+)?%?");
@@ -1271,23 +1300,21 @@ AskResult Ask::ask_once(const std::string& question, int64_t now, const std::str
             if (t.lower == "morning" || t.lower == "afternoon" || t.lower == "evening") part = "this " + t.lower;
         res.scope.insert(res.scope.begin(), "It is only " + std::string(hm) + ", so " + part + " hasn't started yet. Yesterday's:");
     }
-    // A reading the read-back gate doubts is said first, in the catalogue's words for the kind; the answer stays. Not on
-    // the honest reply or a request to clarify (refused), which answer no kind.
+    // A question nothing fits gets the honest reply. A reading the read-back gate merely doubts is answered as read, with
+    // no sentence about how it was taken (the user, 2026-10-25: that sentence helped nobody); the doubt stays in the
+    // measurements (read_back) and in the trace.
     if (fresh_ && unplaced && !res.refused) {
         res.scope.clear();
         res.lead.clear();
         res.notes.clear();
         res.receipts.clear();
         res.undecided = false;
-        res.body = "I can't place that in what this machine records. The nearest reading I have is " + kind_words(kind_) +
-                   "; if that is what you meant, ask it that way. If not, it is outside these records.";
+        res.body = "I can't place that in what this machine records.";
         res.branch = "unanswered:unplaced";
         res.refused = true;
         res.read_back = true;
         card_.refused = true;
     } else if (fresh_ && doubted && !res.refused) {
-        res.scope.insert(res.scope.begin(), "I took this as a question about " + kind_words(kind_) +
-                                                "; if you meant something else, ask with more detail.");
         res.read_back = true;
     }
     for (const auto& [typed, meant] : spelling) res.receipts.push_back("spelling: " + typed + " -> " + meant);
@@ -2480,7 +2507,7 @@ AskResult Ask::answer_reading(const unllm::Reading& r, const std::vector<unllm::
             card_.subject = program;
             card_.subjects_named = {program};
             if (n == 0) {
-                res.body = program + " isn't running right now.";
+                res.body = program + " isn't running right now." + last_run_text(db_, program, now);
             } else if (lead == Intent::Gpu) {
                 res.body = vram > 0 ? program + " is using " + human_bytes(vram) + " of video memory on the GPU right now."
                                     : program + " is running but has nothing on the GPU right now.";
@@ -2492,6 +2519,15 @@ AskResult Ask::answer_reading(const unllm::Reading& r, const std::vector<unllm::
                            fmt(" (the whole machine is at %.0f%%)", s->cpu.total) + ".";
             }
             if (n > 1) res.body += " That's " + std::to_string(n) + " processes together.";
+            // "Why is firefox slow": its memory too, and whether the machine as a whole is short of memory or swapping.
+            if (n > 0 && r.wants == unllm::Wants::Cause && (lead == Intent::Slow || lead == Intent::Story)) {
+                res.body += " It holds " + human_bytes(rss) + " of memory" +
+                            (s->mem.percent() >= 85 ? fmt(", and the machine's memory is at %.0f%%, which slows everything", s->mem.percent())
+                             : s->mem.swap_total > 0 && s->mem.swap_total - s->mem.swap_free > s->mem.swap_total / 2
+                                 ? ", and half the swap is in use, which slows programs whose pages were pushed out"
+                                 : "") +
+                            ".";
+            }
             if (polar) res.lead = n > 0 ? "Yes." : "No.";
             // "whats that node thing": what the processes are, longest running first: the script an interpreter runs
             // (else the command), the unit it runs in and since when.
@@ -2580,6 +2616,17 @@ AskResult Ask::answer_reading(const unllm::Reading& r, const std::vector<unllm::
                     clauses.push_back({{"no program", true}, "be", "working the CPU hard", Tense::Present});
                 for (const auto& f : s->guard.dead_fans)
                     clauses.push_back({{"the fan '" + f + "'", true}, "be", "not spinning while the machine is warm, which traps the heat", Tense::Present});
+                // Not hot now: the last time it was, from the recorder's events, and what was working it then.
+                if (t >= 0 && t < hot) {
+                    auto last = query(db_, "SELECT CAST(start AS INTEGER), peak_temp, 0, summary FROM events WHERE peak_temp >= ?1 ORDER BY start DESC LIMIT 1",
+                                      {int64_t(hot)});
+                    if (!last.empty()) {
+                        const std::string who = top_culprit(db_, last[0].t - 60, last[0].t + 1800, KindHeat | KindCpu, "");
+                        clauses.push_back({{"the last hot spell", true}, "be", "on " + moment_text(last[0].t) + fmt(", when the CPU reached %.0f C", last[0].a) +
+                                                                                 (who.empty() ? "" : ", mostly from " + who), Tense::Past});
+                        res.receipts.push_back(when_text(last[0].t) + "  " + last[0].s1.substr(0, 120));
+                    }
+                }
             }
             card_.metric = "temperature";
             card_.unit = "C";
@@ -2594,18 +2641,49 @@ AskResult Ask::answer_reading(const unllm::Reading& r, const std::vector<unllm::
             }
             // "What percentage of VRAM is in use": the video memory first, as a share, and its receipts are the memory.
             if (kind_ == "gpu.value.now.vram") {
+                double total = 0;
+                bool full = false;
                 for (const auto& g : s->gpus) {
                     const std::string name = g.name.empty() ? "the GPU" : g.name;
                     if (g.mem_used.ok() && g.mem_total.ok() && g.mem_total.get() > 0) {
                         const double pct = 100.0 * g.mem_used.get() / g.mem_total.get();
+                        total = std::max(total, double(g.mem_total.get()));
+                        full = full || pct >= 90;
                         clauses.push_back({{name, true}, "have", fmt("%.0f%% of its video memory in use: ", pct) + human_bytes(g.mem_used.get()) +
-                                                                     " of " + human_bytes(g.mem_total.get()), Tense::Present});
+                                                                     " of " + human_bytes(g.mem_total.get()) +
+                                                                     (pct >= 90 ? ", which is nearly full" : pct >= 70 ? ", which is well used" : ", so it is not full"),
+                                           Tense::Present});
                         res.receipts.push_back(name + "  " + human_bytes(g.mem_used.get()) + " of " + human_bytes(g.mem_total.get()) + " video memory");
                     } else {
                         res.receipts.push_back(name + "  no video memory figure");
                     }
                 }
                 if (clauses.empty()) clauses.push_back({{"no graphics card", true}, "report", "its video memory", Tense::Present});
+                // Who holds it now, by program, and the fullest it has been in the last week when it is not full now.
+                std::map<std::string, double> by;
+                for (const auto& p : s->procs)
+                    if (p.gpu_mem.ok() && p.gpu_mem.get() > 0) by[p.name] += p.gpu_mem.get();
+                std::vector<std::pair<std::string, double>> holders(by.begin(), by.end());
+                std::sort(holders.begin(), holders.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+                if (!holders.empty()) {
+                    std::vector<std::string> next;
+                    for (std::size_t i = 1; i < holders.size() && i < 3; ++i) next.push_back(holders[i].first + " " + human_bytes(holders[i].second));
+                    clauses.push_back({{holders[0].first, true}, "hold", "the most of it, " + human_bytes(holders[0].second) +
+                                                                            (next.empty() ? "" : ", then " + unllm::join_list(next)), Tense::Present});
+                    card_.subjects_named = {holders[0].first};
+                } else if (total > 0) {
+                    clauses.push_back({{"no program", true}, "have", "video memory of its own on it: the rest is the driver's and the desktop's", Tense::Present});
+                }
+                if (!full && total > 0) {
+                    auto hi = query(db_, "SELECT CAST(t AS INTEGER), gpu_mem FROM samples WHERE gpu_mem IS NOT NULL AND t >= ?1 ORDER BY gpu_mem DESC LIMIT 1",
+                                    {now - 7 * 86400});
+                    if (!hi.empty() && hi[0].a >= 0.5 * total) {
+                        const std::string who = top_culprit(db_, hi[0].t - 600, hi[0].t + 600, KindGpu, "");
+                        clauses.push_back({{"the fullest it has been in the last week", true}, "be",
+                                           human_bytes(hi[0].a) + " at " + when_text(hi[0].t) + (who.empty() ? "" : ", with " + who + " on it"), Tense::Past});
+                    }
+                }
+                if (polar) res.lead = full ? "Yes." : "No.";
                 card_.subject = "the GPU";
                 break;
             }
@@ -2650,6 +2728,20 @@ AskResult Ask::answer_reading(const unllm::Reading& r, const std::vector<unllm::
             for (const auto& p : procs)
                 if (res.receipts.size() < 5 && p.rss > 0)
                     res.receipts.push_back(p.name + "  " + human_bytes(double(p.rss)));
+            // The swap, and for a why or a "so much": the day's peak and what drove it, from the per-second readings.
+            if (s->mem.swap_total > 0 && s->mem.swap_total > s->mem.swap_free)
+                clauses.push_back({{"swap", true}, "hold", "another " + human_bytes(double(s->mem.swap_total - s->mem.swap_free)), Tense::Present});
+            if (r.wants == unllm::Wants::Cause || r.excess) {
+                auto mem = series(db_, "mem_pct", "mem_pct", now - 86400, now);
+                const Row* hi = nullptr;
+                for (const auto& x : mem)
+                    if (!hi || x.a > hi->a) hi = &x;
+                if (hi) {
+                    const std::string who = top_culprit(db_, hi->t - 600, hi->t + 600, KindMemory, "");
+                    clauses.push_back({{"the day's peak", true}, "be", fmt("%.0f%% at ", hi->a) + when_text(hi->t) + (who.empty() ? "" : ", mostly from " + who),
+                                       Tense::Past});
+                }
+            }
             break;
         }
         case Intent::Battery: {
@@ -4070,6 +4162,50 @@ AskResult Ask::answer_reading(const unllm::Reading& r, const std::vector<unllm::
                 return res;
             }
         }
+        // "is pid 2310407 weird": weird's report on that one process (its verdict and where it came from), or the records
+        // on the number when nothing runs under it now.
+        std::string pid_s;
+        for (const auto& e : r.entities)
+            if (e.type == "pid") pid_s = e.value;
+        if (target.empty() && program.empty() && !pid_s.empty()) {
+            const std::string out = run_out("weird --offline --no-prompt " + pid_s + " 2>/dev/null");
+            // Paragraphs, their wrapped lines joined: the first is the verdict ("plasmashell (pid 2310407) checks out: ..."),
+            // the one after the "Where it came from" heading says why.
+            std::vector<std::string> paras;
+            {
+                std::istringstream in(out);
+                std::string cur;
+                for (std::string line; std::getline(in, line);) {
+                    const std::string l = trim(line);
+                    if (l.empty()) {
+                        if (!cur.empty()) paras.push_back(cur);
+                        cur.clear();
+                    } else {
+                        cur += (cur.empty() ? "" : " ") + l;
+                    }
+                }
+                if (!cur.empty()) paras.push_back(cur);
+            }
+            std::string verdict, origin;
+            for (std::size_t i = 0; i < paras.size(); ++i) {
+                if (i == 0 && paras[i].find("(pid " + pid_s + ")") != std::string::npos) verdict = paras[i];
+                if (paras[i] == "Where it came from" && i + 1 < paras.size()) origin = paras[i + 1];
+            }
+            if (verdict.empty()) {
+                auto rec = query(db_, "SELECT CAST(started AS INTEGER), IFNULL(ended, 0), 0, name, cmdline FROM procs WHERE pid = ?1 ORDER BY started DESC LIMIT 1",
+                                 {std::atoll(pid_s.c_str())});
+                res.body = "No process " + pid_s + " is running now for weird to check." +
+                           (rec.empty() ? " The records have no process by that number either."
+                                        : " The records show pid " + pid_s + " was " + rec[0].s1 + ", which ran " +
+                                              (rec[0].a > 0 ? span_text(rec[0].t, int64_t(rec[0].a), " to ") : "from " + moment_text(rec[0].t)) + ".");
+            } else {
+                res.body = verdict + (origin.empty() ? "" : " " + origin);
+                res.notes.push_back("weird rates where a program came from, not what it does.");
+            }
+            res.receipts.push_back("weird " + pid_s);
+            res.branch = "trust:pid";
+            return res;
+        }
         // "is this program safe" with nothing named: ask which, rather than scanning everything.
         if (target.empty() && program.empty() && kind_ == "trust.identity") {
             res.body = "Which program do you mean? Name it, or give its path (like \"is ~/Downloads/tool.AppImage safe\"), and I'll check where it came from with weird.";
@@ -4116,26 +4252,42 @@ AskResult Ask::answer_reading(const unllm::Reading& r, const std::vector<unllm::
             res.body = "The weird scanner didn't run (is it installed?).";
             return res;
         }
+        // weird's report: a summary line, then under headings ("Act now", "Worth a look") each finding as a title line
+        // indented two spaces and its explanation wrapped under it at four; the "Everything else" section closes it. The
+        // first two findings are quoted whole, title and explanation.
         std::istringstream lines(out);
         std::string first, line;
         std::getline(lines, first);
         res.body = "I scanned the running programs with weird: " + first;
-        // The findings come before weird's "Everything else" heading; the first two are quoted.
-        std::vector<std::string> found;
+        std::vector<std::string> findings;
+        std::string title, expl;
         bool in_rest = false;
+        auto flush = [&] {
+            if (!title.empty()) findings.push_back(title + (expl.empty() ? "" : ": " + expl));
+            title.clear();
+            expl.clear();
+        };
         while (std::getline(lines, line)) {
-            const std::string l = trim(line);
-            if (l == "Everything else") in_rest = true;
-            // headings ("Worth a look") carry neither a colon nor a full stop
-            const bool heading = l.find(':') == std::string::npos && l.find('.') == std::string::npos;
-            if (!in_rest && !l.empty() && !heading && l.rfind("Compared with", 0) != 0 && found.size() < 2) found.push_back(l);
-            const auto at = line.find("Running programs");
-            if (at != std::string::npos) res.receipts.push_back(line.substr(line.find_first_not_of(' ', at + 16)));
-            if (!line.empty() && line.find_first_not_of(' ') != std::string::npos && res.receipts.size() < 6 &&
-                line.find("weird -v") == std::string::npos && line != first)
-                res.receipts.push_back(line.substr(line.find_first_not_of(' ')));
+            if (line.rfind("Everything else", 0) == 0) {
+                flush();
+                in_rest = true;
+            }
+            if (in_rest) {
+                const auto at = line.find("Running programs");
+                if (at != std::string::npos) res.receipts.push_back(trim(line.substr(at + 16)));
+                else if (!trim(line).empty() && res.receipts.size() < 6 && line.find("weird -v") == std::string::npos) res.receipts.push_back(trim(line));
+            } else if (trim(line).empty()) {
+                flush();
+            } else if (line.rfind("    ", 0) == 0) {
+                expl += (expl.empty() ? "" : " ") + trim(line);
+            } else if (line.rfind("  ", 0) == 0) {
+                flush();
+                title = trim(line);
+            }
         }
-        for (const auto& f : found) res.body += " " + f + (f.back() == '.' ? "" : ".");
+        flush();
+        for (std::size_t i = 0; i < findings.size() && i < 2; ++i) res.body += " " + findings[i] + (findings[i].back() == '.' ? "" : ".");
+        if (findings.size() > 2) res.body += " " + std::to_string(findings.size() - 2) + " more in weird's own report.";
         return res;
     }
     case Intent::Config:
@@ -4694,7 +4846,9 @@ bool answers_from_records(const std::string& kind) {
                                             "gpu.value.window", "diagnose.compare.window", "battery.value.now",
                                             "network.inbound.window", "disk.health.now", "identity.bios.flash",
                                             "story.often.window.process", "network.new.list.window", "slow.procs.value.window",
-                                            "slow.above.value.window", "identity.list", "programs.list.now", "programs.installed.now", "programs.owner.list.now"};
+                                            "slow.above.value.window", "identity.list", "programs.list.now", "programs.installed.now", "programs.owner.list.now",
+                                            "startup.cause.reboot", "programs.open.cause.now", "gpu.model.now", "disk.folder.list.now",
+                                            "disk.find.which.now", "programs.pid.identity.now", "sound.value.now"};
     return k.count(kind) > 0 || from_logs(kind);
 }
 
@@ -4708,7 +4862,8 @@ bool from_logs(const std::string& kind) {
                                             "updates.identity.package", "battery.charger.when.window", "battery.charger.list.window",
                                             "battery.lid.when.window", "battery.lid.list.window", "startup.login.when.window",
                                             "startup.login.list.window", "trust.admin.list.window", "trust.list.window",
-                                            "updates.cause.window", "story.used.window", "devices.when.window", "flash.list.window"};
+                                            "updates.cause.window", "story.used.window", "devices.when.window", "flash.list.window",
+                                            "crashes.cause.window"};
     return k.count(kind) > 0;
 }
 }  // namespace
@@ -4858,6 +5013,30 @@ std::vector<Drop> wifi_drops(int64_t from, int64_t to) {
 }
 
 // The wireless interface, if there is one.
+// iw's link report for a Wi-Fi device: the network, the signal and its grade, the negotiated rates (Mbit/s, as text)
+// and the band's frequency.
+struct WifiLink {
+    std::string ssid, signal, rx, tx, freq;
+    double dbm = 0;
+    const char* grade = "";  // strong, good, fair or weak
+};
+WifiLink wifi_link(const std::string& dev) {
+    WifiLink w;
+    std::istringstream in(run_out("iw dev " + dev + " link 2>/dev/null"));
+    for (std::string line; std::getline(in, line);) {
+        const std::string l = trim(line);
+        auto after = [&](const char* key) { return l.rfind(key, 0) == 0 ? trim(l.substr(std::strlen(key))) : std::string(); };
+        if (auto v = after("SSID:"); !v.empty()) w.ssid = v;
+        if (auto v = after("signal:"); !v.empty()) w.signal = v;
+        if (auto v = after("rx bitrate:"); !v.empty()) w.rx = v.substr(0, v.find(" MBit/s"));
+        if (auto v = after("tx bitrate:"); !v.empty()) w.tx = v.substr(0, v.find(" MBit/s"));
+        if (auto v = after("freq:"); !v.empty()) w.freq = v;
+    }
+    w.dbm = std::atof(w.signal.c_str());
+    w.grade = w.dbm >= -55 ? "strong" : w.dbm >= -67 ? "good" : w.dbm >= -75 ? "fair" : "weak";
+    return w;
+}
+
 std::string wifi_iface() {
     for (const auto& n : list_dir("/sys/class/net"))
         if (exists("/sys/class/net/" + n + "/wireless")) return n;
@@ -5122,6 +5301,31 @@ std::string right_before(sqlite3* db, int64_t t) {
 // carry its last reading), whether it ran on mains or battery, the highs of its last two minutes and of the hour past
 // them, the busiest programs with their command lines, and what the records say of the cause. "" when they hold
 // nothing of it.
+// "firefox isn't running right now": what it did last, from the records. Its latest run is the processes of it that
+// ended within ten minutes of the last one: the span, the CPU time and peak memory they add up to, and how warm and busy
+// the machine got meanwhile. A program with no end on record gets its last start.
+std::string last_run_text(sqlite3* db, const std::string& program, int64_t now) {
+    auto last = query(db, "SELECT CAST(MAX(ended) AS INTEGER) FROM procs WHERE ended IS NOT NULL AND is_program(?1, name, exe, cmdline)", {}, {program});
+    if (last.empty() || last[0].t <= 0) {
+        auto any = query(db, "SELECT CAST(MAX(started) AS INTEGER) FROM procs WHERE is_program(?1, name, exe, cmdline)", {}, {program});
+        if (any.empty() || any[0].t <= 0) return " It hasn't run on this machine as far as the records go.";
+        return " It last started on " + moment_text(any[0].t) + ", and the records don't show it ending.";
+    }
+    const int64_t end = std::min<int64_t>(last[0].t, now);
+    auto run = query(db, "SELECT CAST(MIN(started) AS INTEGER), SUM(cpu_seconds), MAX(peak_rss) FROM procs WHERE ended > ?1 AND ended <= ?2 "
+                         "AND is_program(?3, name, exe, cmdline)", {end - 600, end}, {program});
+    const int64_t start = run.empty() || run[0].t <= 0 || run[0].t > end ? end : run[0].t;
+    std::string s = " It last ran " + (local_date(start) == local_date(end) ? when_text(start) + " to " + clock_text(end) : span_text(start, end, " to ")) +
+                    (end - start >= 60 ? " (" + duration_text(double(end - start)) + ")" : "");
+    if (!run.empty() && (run[0].a > 0 || run[0].b > 0))
+        s += ", using " + (run[0].a >= 60 ? duration_text(run[0].a) : fmt("%.0f s", run[0].a)) + " of CPU time" +
+             (run[0].b > 0 ? " and up to " + human_bytes(run[0].b) + " of memory" : "");
+    auto machine = query(db, "SELECT 0, MAX(temp), MAX(cpu) FROM samples WHERE t >= ?1 AND t <= ?2", {start, end});
+    if (!machine.empty() && machine[0].a > 0)
+        s += fmt("; the machine reached %.0f C", machine[0].a) + (machine[0].b > 0 ? fmt(" and %.0f%% CPU", machine[0].b) : "") + " meanwhile";
+    return s + ".";
+}
+
 std::string stop_story(sqlite3* db, int64_t t) {
     std::vector<std::string> said;
     int64_t end = t;
@@ -6180,9 +6384,51 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
                                       "GROUP BY program ORDER BY 1 DESC LIMIT 5", {now - 120})
                          : query(db_, "SELECT COUNT(*), COUNT(DISTINCT remote), 0, program FROM connections WHERE last_seen >= ? AND first_seen < ? "
                                       "GROUP BY program ORDER BY 1 DESC LIMIT 5", {from, to});
+        const bool sent = kind.rfind("sharing.", 0) == 0;
+        // "What is causing the network slowdown": a why about now gets this side's facts in order: the Wi-Fi link and
+        // its signal, whether anything here is loading the link, the hour's drops, then who is connected. Per-program
+        // traffic isn't measured, so the cause is placed by elimination, and said so.
+        if (live && !sent && r.wants == unllm::Wants::Cause) {
+            if (!sampler_) sampler_ = std::make_unique<Sampler>();
+            sampler_->sample();
+            usleep(600 * 1000);
+            const SnapshotPtr sn = sampler_->sample();
+            double rx = 0, tx = 0;
+            for (const auto& x : sn->nets)
+                if (x.kind != "Loopback") rx += x.rx_bps, tx += x.tx_bps;
+            const std::string dev = wifi_iface();
+            const WifiLink w = dev.empty() ? WifiLink{} : wifi_link(dev);
+            const bool wifi = !dev.empty() && !w.ssid.empty();
+            std::string body;
+            if (!dev.empty() && !wifi) body = "The Wi-Fi isn't connected to a network right now.";
+            else if (wifi)
+                body = "The Wi-Fi link to \"" + w.ssid + "\" is " + w.grade + " (" + w.signal + ")" + (w.rx.empty() ? "" : ", negotiated at " + w.rx + " Mbit/s") + ".";
+            const double link_mbit = std::atof(w.rx.c_str()), load_mbit = 8 * (rx + tx) / 1e6;
+            const bool idle = link_mbit > 0 && load_mbit < 0.05 * link_mbit;
+            body += (body.empty() ? "" : " ") + std::string("The machine is moving ") + human_bytes(rx) + "/s down and " + human_bytes(tx) + "/s up right now" +
+                    (idle ? ", nowhere near what the link carries, so nothing on this machine is loading it"
+                          : link_mbit > 0 && load_mbit >= 0.5 * link_mbit ? ", most of what the link carries" : "") + ".";
+            if (wifi) {
+                const auto drops = wifi_drops(now - 3600, now);
+                if (!drops.empty())
+                    body += " The Wi-Fi dropped " + (drops.size() == 1 ? std::string("once") : std::to_string(drops.size()) + " times") + " in the last hour.";
+                const std::string grade = w.grade;
+                if (grade == "weak" || grade == "fair") body += " A " + grade + " signal is the likeliest cause on this side.";
+                else if (!drops.empty()) body += " A link that keeps dropping is the likeliest cause on this side.";
+                else if (idle) body += " A slowdown is then more likely the router or the internet side than this laptop.";
+            }
+            if (!rows.empty()) {
+                std::vector<std::string> named;
+                for (const auto& x : rows) named.push_back(x.s1 + " (" + std::to_string(x.t) + (x.t == 1 ? " connection" : " connections") + ")");
+                body += " Connected right now: " + unllm::join_list(named) + ".";
+            }
+            res.body = body;
+            res.notes.push_back("How much each program sends or receives isn't measured, only who connects where.");
+            res.branch = "records:network-cause";
+            return res;
+        }
         // How much each program moved is not recorded; the machine's own figures are: its rates now, or what its per-second
         // readings add up to over the window (and, for data sent, the last day's upload).
-        const bool sent = kind.rfind("sharing.", 0) == 0;
         auto moved = [&](int64_t a, int64_t b) {
             auto m = query(db_, "SELECT COUNT(*), SUM(net_rx), SUM(net_tx) FROM samples WHERE net_rx IS NOT NULL AND t >= ? AND t < ?", {a, b});
             return m.empty() || m[0].t == 0 ? std::pair<double, double>{-1, -1} : std::pair<double, double>{m[0].a, m[0].b};
@@ -6220,7 +6466,7 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
         res.branch = "records:connections";
         return res;
     }
-    if (kind == "crashes.list.window" || kind == "crashes.when.window" || kind == "crashes.which.window") {
+    if (kind == "crashes.list.window" || kind == "crashes.when.window" || kind == "crashes.which.window" || kind == "crashes.cause.window") {
         // Core dumps, segfaults, out-of-memory kills and failed units. "When did X last crash" with no time named
         // reads the whole history.
         const bool all = kind == "crashes.when.window" && !r.window.stated;
@@ -6235,9 +6481,38 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
         const std::string of = program.empty() ? "" : " of " + program;
         for (auto it = found.rbegin(); it != found.rend() && res.receipts.size() < 6; ++it) res.receipts.push_back(when_text(it->t) + "  " + it->text);
         res.branch = "records:crashes";
+        // A named program with nothing in the window: its last crash on record, with the kernel's note on it, else that it
+        // has never crashed on record and when it last ran, so a why gets what there is.
+        auto history = [&]() -> std::string {
+            if (program.empty() || all) return "";
+            std::vector<Mishap> ever;
+            for (const auto& m : mishaps(db_, 0, from))
+                if (about(m) && m.unit.empty()) ever.push_back(m);
+            if (!ever.empty()) {
+                const Mishap& m = ever.back();
+                std::string note;
+                auto detail = query(db_, "SELECT t, 0, 0, detail FROM log WHERE category = 'problems' AND t >= ?1 AND t <= ?2 AND detail != '' ORDER BY t DESC LIMIT 1",
+                                    {m.t - 2, m.t + 2});
+                if (!detail.empty()) {
+                    // "kernel: movie[2409161]: segfault at 14 ip ... in libprotobuf-lite.so.36.1.0[ce4ef,...]": the fault and the library.
+                    const std::string& d = detail[0].s1;
+                    const std::string fault = d.find("segfault") != std::string::npos ? "a segfault" : d.find("general protection") != std::string::npos ? "a protection fault" : "";
+                    std::string lib;
+                    if (const auto at = d.find(" in "); at != std::string::npos) {
+                        lib = d.substr(at + 4, d.find_first_of("[ ", at + 4) - at - 4);
+                        if (lib.find('.') == std::string::npos) lib.clear();
+                    }
+                    if (!fault.empty()) note = " (" + fault + (lib.empty() ? "" : " in " + lib) + ")";
+                }
+                return " Its last crash on record was " + moment_text(m.t) + note + aftermath(m) + ".";
+            }
+            auto first = query(db_, "SELECT CAST(MIN(t) AS INTEGER) FROM log", {});
+            return " None is on record at all" + (first.empty() || first[0].t <= 0 ? std::string() : ", back to " + moment_text(first[0].t)) + "." +
+                   last_run_text(db_, program, now);
+        };
         if (found.empty()) {
             if (polar) settle(res, r, false);
-            res.body = "No crash or failed unit" + of + " was recorded " + where + ".";
+            res.body = "No crash or failed unit" + of + " was recorded " + where + "." + history();
             return res;
         }
         card_.moment = found.back().t;
@@ -6292,7 +6567,7 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
                                          " recorded " + where + ": " + said(crashed, false) + "."
                                    : capital(program) + " crashed " + times(n) + " " + where + ": " + said(crashed, true) + ".";
         } else if (!program.empty()) {
-            text = "No crash of " + program + " itself was recorded " + where + ".";
+            text = "No crash of " + program + " itself was recorded " + where + "." + history();
         }
         if (!failed.empty()) {
             const long n = count_of(failed);
@@ -7112,6 +7387,470 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
         res.branch = "records:procs-by-owner";
         return res;
     }
+    if (kind == "sound.value.now") {
+        // The desktop's sound server (wpctl, PipeWire): the default output's volume and whether it is muted, and its name.
+        const std::string vol = trim(run_out("wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null"));  // "Volume: 0.50 [MUTED]"
+        if (vol.rfind("Volume:", 0) != 0) {
+            res.body = "I can't read the sound settings: the desktop's sound server (wpctl) didn't answer.";
+            res.branch = "records:sound-none";
+            return res;
+        }
+        const bool muted = vol.find("MUTED") != std::string::npos;
+        const double level = std::atof(vol.c_str() + 7) * 100;
+        std::string output;
+        std::istringstream in(run_out("wpctl inspect @DEFAULT_AUDIO_SINK@ 2>/dev/null"));
+        for (std::string line; std::getline(in, line);)
+            if (const auto at = line.find("node.description = \""); at != std::string::npos && line.rfind('"') > at + 20)
+                output = line.substr(at + 20, line.rfind('"') - at - 20);
+        // "Is it muted" and "is the sound on" ask opposite things: the side the question is nearer by meaning.
+        if (polar) {
+            const int side = asked_test(r, {{"the sound is muted", "is it muted"}, {"the sound is on", "is the volume turned up"}});
+            if (side < 0) res.undecided = true;
+            else res.lead = (side == 0 ? muted : !muted) ? "Yes." : "No.";
+        }
+        res.body = std::string(muted ? "The sound is muted" : "The sound isn't muted") + fmt(", with the volume set to %.0f%%", level) +
+                   (output.empty() ? "" : " on " + output) + ".";
+        if (r.window.stated && !r.window.live && !r.window.present) res.scope.push_back("Sound settings aren't kept over time, so this is the present reading.");
+        res.receipts.push_back("wpctl: " + vol);
+        res.branch = "records:sound";
+        return res;
+    }
+    if (kind == "startup.cause.reboot") {
+        // "What caused the last shutdown": the previous boot's end in the journal's boot list; clean (the journal holds the
+        // shutdown mark for that boot and no stop event covers it) or a stop; then what the log and the readings show in
+        // the hour before it: the power button, the charger and battery, updates, crashes, and for a stop the recorder's
+        // story of its last minutes.
+        const auto b = boots();
+        if (b.size() < 2) {
+            res.body = "The journal shows no earlier boot, so there is no shutdown on record to explain" +
+                       (b.empty() ? std::string(".") : "; it has been up since " + when_text(b.back().first) + ".");
+            res.branch = "records:shutdown-none";
+            return res;
+        }
+        const Boot& prev = b[b.size() - 2];
+        const int64_t stop = prev.second;
+        auto evs = query(db_, "SELECT CAST(start AS INTEGER), 0, 0, summary FROM events WHERE (kinds & ?1) != 0 AND start >= ?2 AND start < ?3 ORDER BY start DESC LIMIT 1",
+                         {int64_t(KindShutdown), stop - 600, stop + 600});
+        const bool clean = evs.empty() && !journal("-n 1 _BOOT_ID=" + prev.id + " MESSAGE_ID=98268866d1d54a499c4e98921d93bc40").empty();
+        res.body = "The last shutdown was " + moment_text(stop) + (clean ? ", a clean one" : ": the machine stopped without shutting down properly") + ".";
+        auto rows = query(db_, "SELECT CAST(t AS INTEGER), 0, 0, title FROM log WHERE t >= ?1 AND t <= ?2 AND category IN ('session', 'software', 'problems', 'admin') "
+                               "ORDER BY t DESC LIMIT 4", {stop - 3600, stop + 5});
+        std::vector<std::string> said;
+        for (auto it = rows.rbegin(); it != rows.rend(); ++it) said.push_back(it->s1 + " at " + clock_text(it->t));
+        if (!said.empty()) res.body += " In the hour before it: " + unllm::join_list(said) + ".";
+        auto bat = query(db_, "SELECT CAST(t AS INTEGER), battery_pct, on_ac FROM samples WHERE t <= ?1 AND t >= ?2 AND battery_pct IS NOT NULL ORDER BY t DESC LIMIT 1",
+                         {stop, stop - 300});
+        if (!bat.empty() && bat[0].b == 0 && bat[0].a <= 5) res.body += fmt(" The battery was at %.0f%% and unplugged, which by itself ends a session.", bat[0].a);
+        if (!clean) {
+            std::string why = evs.empty() ? "" : evs[0].s1;
+            if (const auto at = why.find("). "); at != std::string::npos && at < 40) why = why.substr(at + 3);
+            // Its opening ("The machine stopped without warning on ...") repeats the lead: the explanation follows it.
+            if (why.rfind("The machine stopped without warning", 0) == 0)
+                if (const auto at = why.find(". "); at != std::string::npos) why = why.substr(at + 2);
+            const std::string told = stop_story(db_, stop);
+            // The event's own readings are told again, fuller, by stop_story: said once.
+            if (!told.empty())
+                for (const char* own : {" The last reading", " The recorder read on", " In its last two minutes", " The busiest program"})
+                    if (const auto at = why.find(own); at != std::string::npos) why.erase(at);
+            if (!why.empty() || !told.empty()) res.body += " " + why + (why.empty() || told.empty() ? "" : " ") + told;
+            else res.notes.push_back("The log doesn't say whether it hung, lost power or crashed.");
+        } else if (said.empty()) {
+            res.notes.push_back("The log has nothing in the hour before it, so most likely a shutdown you chose.");
+        }
+        for (auto it = rows.rbegin(); it != rows.rend(); ++it) res.receipts.push_back(when_text(it->t) + "  " + it->s1);
+        res.branch = clean ? "records:shutdown-clean" : "records:shutdown-stop";
+        return res;
+    }
+    if (kind == "programs.open.cause.now") {
+        // "Why won't firefox open": whether it is running already (an instance with no window), else its starts in the last
+        // hour and how they ended (a start over within seconds is a failed launch), its crashes in the last day, and its
+        // last run. Why a launch fails is in the program's own messages, which aren't recorded.
+        if (program.empty()) {
+            res.body = "Which program won't open? Name it and I'll check whether it is running, whether it was started lately and how those starts ended.";
+            res.branch = "records:open-which";
+            return res;
+        }
+        if (!sampler_) sampler_ = std::make_unique<Sampler>();
+        const SnapshotPtr s = sampler_->sample();
+        std::vector<const ProcessInfo*> live;
+        for (const auto& p : s->procs)
+            if (is_program(program, p.name, p.exe, p.cmdline)) live.push_back(&p);
+        std::sort(live.begin(), live.end(), [](const ProcessInfo* a, const ProcessInfo* b) { return a->started_epoch < b->started_epoch; });
+        card_.subject = program;
+        card_.subjects_named = {program};
+        if (!live.empty()) {
+            res.body = program + " is running: " + std::to_string(live.size()) + (live.size() == 1 ? " process" : " processes") +
+                       (live[0]->started_epoch > 0 ? ", the oldest since " + moment_text(int64_t(live[0]->started_epoch)) : "") +
+                       ". If no window shows, that instance is running without one; closing it (or killing it) and starting again usually brings the window back.";
+        } else {
+            auto starts = query(db_, "SELECT CAST(started AS INTEGER), IFNULL(ended, 0), 0, name FROM procs WHERE started >= ?1 AND is_program(?2, name, exe, cmdline) "
+                                     "ORDER BY started DESC LIMIT 10", {now - 3600}, {program});
+            std::size_t brief = 0;
+            for (const auto& x : starts)
+                if (x.a > 0 && x.a - x.t < 10) ++brief;
+            if (starts.empty()) {
+                res.body = program + " isn't running, and it hasn't been started in the last hour as far as the records go." + last_run_text(db_, program, now);
+            } else {
+                res.body = program + " isn't running. It was started " + times(long(starts.size())) + " in the last hour" +
+                           (brief ? ", and " + (brief == starts.size() ? std::string("every start") : std::to_string(brief) + " of them") +
+                                        " ended within seconds: a failed launch, not a window you missed"
+                                  : ", the last at " + clock_text(starts[0].t) + (starts[0].a > 0 ? ", and it ran until " + clock_text(int64_t(starts[0].a)) : "")) +
+                           ".";
+            }
+            std::vector<Mishap> bad;
+            for (const auto& m : mishaps(db_, now - 86400, now))
+                if (about(m)) bad.push_back(m);
+            if (!bad.empty()) res.body += " It crashed " + times(count_of(bad)) + " in the last day, the last at " + when_text(bad.back().t) + ".";
+            for (const auto& x : starts)
+                if (res.receipts.size() < 6) res.receipts.push_back(when_text(x.t) + "  started" + (x.a > 0 ? ", ended " + clock_text(int64_t(x.a)) : ""));
+        }
+        res.notes.push_back("Why a launch fails is in the program's own messages, which aren't recorded; starting it from a terminal shows them.");
+        res.branch = "records:wont-open";
+        return res;
+    }
+    if (kind == "gpu.model.now") {
+        // Ollama's own list of what it has loaded (its local API), then any process serving a model file named on its
+        // command line (--model PATH or -m PATH); with neither, the last such run on record.
+        std::vector<std::string> loaded;
+        const std::string ps = run_out("curl -4 -s -m 2 http://127.0.0.1:11434/api/ps 2>/dev/null");
+        for (std::size_t at = 0; (at = ps.find("\"name\":\"", at)) != std::string::npos; at += 8) {
+            const std::string win = ps.substr(at, 900);
+            const std::string name = jfield(win, "name"), vram = jfield(win, "size_vram");
+            if (!name.empty())
+                loaded.push_back(name + (vram.empty() || std::atof(vram.c_str()) <= 0 ? "" : " (" + human_bytes(std::atof(vram.c_str())) + " in video memory)"));
+        }
+        auto model_arg = [](const std::string& cmd) {
+            for (const char* flag : {"--model ", " -m "}) {
+                const auto at = cmd.find(flag);
+                if (at == std::string::npos) continue;
+                const auto s = at + std::strlen(flag), e = cmd.find(' ', s);
+                const std::string p = cmd.substr(s, e == std::string::npos ? std::string::npos : e - s);
+                if (!p.empty() && p[0] == '/') return p;
+            }
+            return std::string();
+        };
+        auto model_name = [](const std::string& path) {
+            const std::string b = path.substr(path.rfind('/') + 1);
+            return b.rfind("sha256-", 0) == 0 ? "an Ollama model file (" + b.substr(0, 19) + "...)" : b;
+        };
+        if (!sampler_) sampler_ = std::make_unique<Sampler>();
+        const SnapshotPtr s = sampler_->sample();
+        std::vector<std::string> servers;
+        for (const auto& p : s->procs)
+            if (const std::string m = model_arg(p.cmdline); !m.empty())
+                servers.push_back(p.name + " serving " + model_name(m) +
+                                  (p.gpu_mem.ok() && p.gpu_mem.get() > 0 ? " (" + human_bytes(p.gpu_mem.get()) + " of video memory)" : ""));
+        if (!loaded.empty()) {
+            res.body = "Ollama has " + unllm::join_list(loaded) + " loaded right now.";
+        } else if (!servers.empty()) {
+            res.body = "Running right now: " + unllm::join_list(servers) + ". Ollama itself reports nothing loaded.";
+        } else {
+            // The last model server on record: a program that has held video memory in the recorder's events (so a speech
+            // voice or another small model file doesn't stand in for the AI model), else any process serving a model file.
+            auto last = query(db_, "SELECT CAST(started AS INTEGER), IFNULL(ended, 0), 0, name, cmdline FROM procs p WHERE (cmdline LIKE '%--model /%' OR cmdline LIKE '% -m /%') "
+                                   "AND EXISTS (SELECT 1 FROM event_culprits c WHERE c.name = p.name AND c.gpu_mem > 0) ORDER BY started DESC LIMIT 1", {});
+            if (last.empty())
+                last = query(db_, "SELECT CAST(started AS INTEGER), IFNULL(ended, 0), 0, name, cmdline FROM procs WHERE cmdline LIKE '%--model /%' OR cmdline LIKE '% -m /%' "
+                                  "ORDER BY started DESC LIMIT 1", {});
+            res.body = std::string("No model is loaded right now: Ollama reports none") + (ps.empty() ? " (it isn't answering)" : "") + " and no process is serving a model file.";
+            if (!last.empty())
+                res.body += " The last one on record was " + last[0].s1 + " serving " + model_name(model_arg(last[0].s2)) + ", " +
+                            (last[0].a > 0 ? span_text(last[0].t, int64_t(last[0].a), " to ") : "from " + moment_text(last[0].t)) + ".";
+        }
+        for (const auto& x : loaded) res.receipts.push_back("ollama: " + x);
+        for (const auto& x : servers) res.receipts.push_back(x);
+        res.branch = "records:model";
+        return res;
+    }
+    if (kind == "disk.folder.list.now") {
+        namespace fs = std::filesystem;
+        const char* h = getenv("HOME");
+        const std::string home = h ? h : "/";
+        auto shorten = [&](const std::string& p) { return p == home ? std::string("~") : p.rfind(home + "/", 0) == 0 ? "~" + p.substr(home.size()) : p; };
+        auto lower = [](std::string s) {
+            for (auto& c : s) c = char(std::tolower(static_cast<unsigned char>(c)));
+            return s;
+        };
+        // The folder: a path typed, else one of the desktop's named folders (user-dirs.dirs) or a top-level folder of home
+        // that a word of the question names.
+        std::string folder;
+        for (std::size_t at = 0; at < question_.size() && folder.empty(); ++at)
+            if ((question_[at] == '/' || (question_[at] == '~' && (at + 1 == question_.size() || question_[at + 1] == '/'))) &&
+                (at == 0 || question_[at - 1] == ' ')) {
+                const std::size_t end = question_.find_first_of(" ?,", at);
+                folder = question_.substr(at, end == std::string::npos ? std::string::npos : end - at);
+                if (folder[0] == '~') folder = home + folder.substr(1);
+                while (folder.size() > 1 && folder.back() == '/') folder.pop_back();
+            }
+        std::vector<std::pair<std::string, std::string>> known;  // a folder's name in lower case, and its path
+        if (std::ifstream in(home + "/.config/user-dirs.dirs"); in)
+            for (std::string line; std::getline(in, line);) {
+                const auto q1 = line.find('"'), q2 = line.rfind('"');
+                if (line.rfind("XDG_", 0) != 0 || q1 == std::string::npos || q2 <= q1) continue;
+                std::string p = line.substr(q1 + 1, q2 - q1 - 1);
+                if (p.rfind("$HOME", 0) == 0) p = home + p.substr(5);
+                while (p.size() > 1 && p.back() == '/') p.pop_back();
+                if (p != home) known.emplace_back(lower(p.substr(p.rfind('/') + 1)), p);
+            }
+        for (const auto& name : list_dir(home))
+            if (!name.empty() && name[0] != '.' && fs::is_directory(home + "/" + name)) known.emplace_back(lower(name), home + "/" + name);
+        if (folder.empty())
+            for (const auto& t : r.terms)
+                for (const auto& [name, path] : known)
+                    if (folder.empty() && t.size() >= 4 && (name == t || name.rfind(t, 0) == 0)) folder = path;
+        std::error_code ec;
+        if (folder.empty() || !fs::is_directory(folder, ec)) {
+            std::vector<std::string> names;
+            for (const auto& [name, path] : known)
+                if (names.size() < 8 && std::find(names.begin(), names.end(), shorten(path)) == names.end()) names.push_back(shorten(path));
+            res.body = (folder.empty() ? std::string("Which folder?") : "There is no folder " + shorten(folder) + ".") + " Give its path (like ~/Downloads)" +
+                       (names.empty() ? "." : ", or one of yours: " + unllm::join_list(names) + ".");
+            res.branch = "records:folder-which";
+            return res;
+        }
+        struct Entry {
+            std::string name;
+            double bytes = 0;
+            int64_t mtime = 0;
+            bool dir = false;
+        };
+        std::vector<Entry> entries;
+        double bytes = 0;
+        long files = 0, dirs = 0, hidden = 0;
+        for (const auto& e : fs::directory_iterator(folder, fs::directory_options::skip_permission_denied, ec)) {
+            const std::string name = e.path().filename().string();
+            if (name.empty() || name[0] == '.') {
+                ++hidden;
+                continue;
+            }
+            Entry x;
+            x.name = name;
+            x.dir = e.is_directory(ec);
+            struct stat st {};
+            if (stat(e.path().c_str(), &st) == 0) {
+                x.mtime = st.st_mtime;
+                if (!x.dir && S_ISREG(st.st_mode)) x.bytes = double(st.st_size), bytes += x.bytes;
+            }
+            (x.dir ? dirs : files)++;
+            entries.push_back(x);
+            if (entries.size() >= 20000) break;
+        }
+        card_.subject = shorten(folder);
+        if (entries.empty()) {
+            res.body = shorten(folder) + " has nothing in it" + (hidden ? ", apart from " + std::to_string(hidden) + " hidden entries" : "") + ".";
+            res.branch = "records:folder-empty";
+            return res;
+        }
+        res.body = shorten(folder) + " holds " + std::to_string(entries.size()) + (entries.size() == 1 ? " item: " : " items: ") +
+                   (files ? std::to_string(files) + (files == 1 ? " file" : " files") : "") + (files && dirs ? " and " : "") +
+                   (dirs ? std::to_string(dirs) + (dirs == 1 ? " folder" : " folders") : "") +
+                   (bytes > 0 ? ", " + human_bytes(bytes) + " in the files at the top level" : "") +
+                   (hidden ? " (" + std::to_string(hidden) + (hidden == 1 ? " hidden entry" : " hidden entries") + " not counted)" : "") + ".";
+        if (entries.size() <= 8) {
+            std::vector<std::string> all;
+            for (const auto& x : entries) all.push_back(x.name + (x.dir ? " (folder)" : x.bytes > 0 ? " (" + human_bytes(x.bytes) + ")" : ""));
+            res.body += " They are " + unllm::join_list(all) + ".";
+        } else {
+            std::vector<Entry> newest = entries;
+            std::sort(newest.begin(), newest.end(), [](const Entry& a, const Entry& b) { return a.mtime > b.mtime; });
+            std::vector<std::string> said;
+            for (std::size_t i = 0; i < newest.size() && i < 3; ++i) said.push_back(newest[i].name + (newest[i].mtime ? " (" + when_text(newest[i].mtime) + ")" : ""));
+            res.body += " The newest: " + unllm::join_list(said) + ".";
+            std::vector<Entry> biggest;
+            for (const auto& x : entries)
+                if (!x.dir && x.bytes > 0) biggest.push_back(x);
+            std::sort(biggest.begin(), biggest.end(), [](const Entry& a, const Entry& b) { return a.bytes > b.bytes; });
+            said.clear();
+            for (std::size_t i = 0; i < biggest.size() && i < 3; ++i) said.push_back(biggest[i].name + " (" + human_bytes(biggest[i].bytes) + ")");
+            if (!said.empty()) res.body += " The biggest: " + unllm::join_list(said) + ".";
+        }
+        for (const auto& x : entries)
+            if (res.receipts.size() < 8) res.receipts.push_back(x.name + (x.dir ? "/" : "  " + human_bytes(x.bytes)));
+        res.branch = "records:folder";
+        return res;
+    }
+    if (kind == "disk.find.which.now") {
+        const char* h = getenv("HOME");
+        const std::string home = h ? h : "/";
+        auto shorten = [&](const std::string& p) { return p.rfind(home + "/", 0) == 0 ? "~" + p.substr(home.size()) : p; };
+        auto quote = [](const std::string& x) {
+            std::string q = "'";
+            for (char c : x) q += c == '\'' ? std::string("'\\''") : std::string(1, c);
+            return q + "'";
+        };
+        // The name: a word of the question with a dot in it ("history.db", "spine-audit.md"), as typed; else the question's
+        // words the analyzer doesn't know, as typed (the stemmed forms would break a name).
+        std::string name;
+        {
+            std::istringstream in(question_);
+            for (std::string w; in >> w;) {
+                while (!w.empty() && (w.back() == '?' || w.back() == ',' || w.back() == '.' || w.back() == '"')) w.pop_back();
+                if (!w.empty() && w[0] == '"') w.erase(0, 1);
+                if (w.size() >= 3 && w.find('.') != std::string::npos && w[0] != '.' && w.find("..") == std::string::npos) {
+                    name = w;
+                    break;
+                }
+            }
+        }
+        if (name.empty()) {
+            std::istringstream in(question_);
+            std::vector<std::string> raw;
+            for (std::string w; in >> w;) {
+                while (!w.empty() && (w.back() == '?' || w.back() == ',' || w.back() == '.')) w.pop_back();
+                raw.push_back(w);
+            }
+            for (const auto& term : named_words(r, kind))
+                for (const auto& w : raw) {
+                    std::string low = w;
+                    for (auto& c : low) c = char(std::tolower(static_cast<unsigned char>(c)));
+                    if (low.rfind(term, 0) == 0 && name.find(w) == std::string::npos) {
+                        name += (name.empty() ? "" : " ") + w;
+                        break;
+                    }
+                }
+        }
+        if (name.empty()) {
+            res.body = "Which file or folder? Give its name, like \"where is history.db\".";
+            res.branch = "records:find-which";
+            return res;
+        }
+        // The file index first (plocate, by base name, case aside), then a walk of the home folder when it has nothing.
+        std::string out = run_out("plocate -i -b -l 12 -- " + quote(name) + " 2>/dev/null");
+        const bool indexed = !out.empty();
+        bool cut_short = false;  // the walk ran out of time (a busy machine, a huge tree)
+        if (out.empty()) {
+            // -I: files a project's .gitignore lists (a build folder) are files all the same.
+            out = run_out("timeout 25 fd -F -i -H -I --max-results 12 --exclude .cache --exclude .git -- " + quote(name) + " " + quote(home) +
+                          " 2>/dev/null; echo \"__exit=$?\"");
+            if (const auto at = out.rfind("__exit="); at != std::string::npos) {
+                cut_short = out.compare(at + 7, 3, "124") == 0;
+                out.erase(at);
+            }
+        }
+        struct Hit {
+            std::string path;
+            double bytes = 0;
+            int64_t mtime = 0;
+            bool dir = false, mine = false;
+        };
+        std::vector<Hit> hits;
+        {
+            std::istringstream in(out);
+            for (std::string line; std::getline(in, line);) {
+                if (line.empty()) continue;
+                while (line.size() > 1 && line.back() == '/') line.pop_back();
+                Hit x;
+                x.path = line;
+                x.mine = line.rfind(home + "/", 0) == 0;
+                struct stat st {};
+                if (stat(line.c_str(), &st) == 0) {
+                    x.mtime = st.st_mtime;
+                    x.dir = S_ISDIR(st.st_mode);
+                    if (S_ISREG(st.st_mode)) x.bytes = double(st.st_size);
+                }
+                hits.push_back(x);
+            }
+        }
+        if (hits.empty()) {
+            res.body = "Nothing named \"" + name + "\" is in the file index or your home folder" + (cut_short ? ", as far as a 25-second walk of it got" : "") + ".";
+            res.notes.push_back(cut_short ? "The walk of your home folder ran out of time, so a file deep in a big tree may have been missed."
+                                          : "The file index is rebuilt once a day, so a file made today shows only when it is in your home folder.");
+            res.branch = "records:find-none";
+            return res;
+        }
+        // The file named exactly first ("history.db" before "history.db-wal"), then yours before the system's, newest first.
+        auto lower = [](std::string s) {
+            for (auto& c : s) c = char(std::tolower(static_cast<unsigned char>(c)));
+            return s;
+        };
+        const std::string want = lower(name);
+        auto exact = [&](const Hit& h) { return lower(h.path.substr(h.path.rfind('/') + 1)) == want; };
+        std::sort(hits.begin(), hits.end(), [&](const Hit& a, const Hit& b) {
+            if (exact(a) != exact(b)) return exact(a);
+            return a.mine != b.mine ? a.mine : a.mtime > b.mtime;
+        });
+        const Hit& h0 = hits[0];
+        res.body = name + " is at " + shorten(h0.path) + (h0.dir ? " (a folder" : " (" + human_bytes(h0.bytes)) +
+                   (h0.mtime ? ", changed " + when_text(h0.mtime) : "") + ").";
+        if (hits.size() > 1) {
+            std::vector<std::string> more;
+            for (std::size_t i = 1; i < hits.size() && i < 4; ++i) more.push_back(shorten(hits[i].path));
+            res.body += " Also: " + unllm::join_list(more) + (hits.size() > 4 ? ", and " + std::to_string(hits.size() - 4) + " more" : "") + ".";
+        }
+        for (const auto& x : hits)
+            if (res.receipts.size() < 8) res.receipts.push_back(x.path);
+        if (indexed) res.notes.push_back("Found through the file index (plocate), which is rebuilt once a day.");
+        card_.subject = name;
+        res.branch = "records:find";
+        return res;
+    }
+    if (kind == "programs.pid.identity.now") {
+        std::string pid_s;
+        for (const auto& e : r.entities)
+            if (e.type == "pid") pid_s = e.value;
+        if (pid_s.empty()) {
+            res.body = "Which process? Give its number, like \"explain pid 2310407\"; the Processes page lists them.";
+            res.branch = "records:pid-which";
+            return res;
+        }
+        const int64_t pid = std::atoll(pid_s.c_str());
+        if (!sampler_) sampler_ = std::make_unique<Sampler>();
+        const SnapshotPtr s = sampler_->sample();
+        const ProcessInfo* live = nullptr;
+        std::string parent;
+        for (const auto& p : s->procs)
+            if (p.key.pid == pid) live = &p;
+        if (live)
+            for (const auto& p : s->procs)
+                if (p.key.pid == live->ppid) parent = p.name;
+        // The fact table's word on the program ("what is kswapd0").
+        auto fact = [&](const std::string& n) {
+            const Fact* f = facts_.lookup(n);
+            if (!f || f->explanation.empty()) return std::string();
+            std::string e = f->explanation;
+            if (e.back() != '.') e += '.';
+            return " " + n + ": " + e;
+        };
+        if (live) {
+            std::string cmd = live->cmdline.substr(0, 90);
+            if (live->cmdline.size() > 90) cmd += "...";
+            res.body = "Process " + pid_s + " is " + live->name + (cmd.empty() || cmd == live->name ? "" : " (" + cmd + ")") + ", started by " +
+                       (parent.empty() ? "pid " + std::to_string(live->ppid) : parent) + (live->user.empty() ? "" : " as " + live->user) +
+                       (live->unit.empty() ? "" : " in " + live->unit) +
+                       (live->started_epoch > 0 ? ", running since " + moment_text(int64_t(live->started_epoch)) : "") + ". Right now it uses " +
+                       fmt("%.0f%%", live->cpu) + " of the CPU and holds " + human_bytes(double(live->rss)) + " of memory" +
+                       (live->gpu_mem.ok() && live->gpu_mem.get() > 0 ? " and " + human_bytes(live->gpu_mem.get()) + " of video memory" : "") +
+                       (live->threads > 1 ? fmt(", with %d threads", live->threads) : "") + ".";
+            res.body += fact(live->name);
+            // weird's verdict on where it came from: the first paragraph of its report.
+            const std::string out = run_out("weird --offline --no-prompt " + pid_s + " 2>/dev/null");
+            if (const auto end = out.find("\n\n"); end != std::string::npos && out.find("(pid " + pid_s + ")") < end) {
+                std::string v = out.substr(0, end);
+                for (auto& c : v) c = c == '\n' ? ' ' : c;
+                res.body += " " + v;
+            }
+            card_.subject = live->name;
+            card_.subjects_named = {live->name};
+            res.receipts.push_back("pid " + pid_s + "  live" + (live->unit.empty() ? "" : "  " + live->unit));
+        } else {
+            auto rec = query(db_, "SELECT CAST(started AS INTEGER), IFNULL(ended, 0), cpu_seconds, name, cmdline FROM procs WHERE pid = ?1 ORDER BY started DESC LIMIT 1", {pid});
+            auto who = query(db_, "SELECT 0, 0, 0, IFNULL(parent, ''), IFNULL(user, '') FROM procs WHERE pid = ?1 ORDER BY started DESC LIMIT 1", {pid});
+            if (rec.empty()) {
+                res.body = "No process " + pid_s + " is running now, and none by that number is on record.";
+            } else {
+                res.body = "No process " + pid_s + " is running now. The records show it was " + rec[0].s1 +
+                           (rec[0].s2.empty() || rec[0].s2 == rec[0].s1 ? "" : " (" + rec[0].s2.substr(0, 90) + ")") +
+                           (who.empty() || who[0].s1.empty() ? "" : ", started by " + who[0].s1) + (who.empty() || who[0].s2.empty() ? "" : " as " + who[0].s2) +
+                           ", running " + (rec[0].a > 0 ? span_text(rec[0].t, int64_t(rec[0].a), " to ") : "from " + moment_text(rec[0].t) + " with no end recorded") +
+                           (rec[0].b > 0 ? ", using " + (rec[0].b >= 60 ? duration_text(rec[0].b) : fmt("%.0f s", rec[0].b)) + " of CPU time" : "") + "." +
+                           fact(rec[0].s1) + " Process numbers are reused after a restart, so this may not be the one you saw.";
+                card_.subject = rec[0].s1;
+            }
+            res.receipts.push_back("pid " + pid_s + "  from the records");
+        }
+        res.branch = "records:pid";
+        return res;
+    }
     if (kind == "programs.list.now") {
         // The apps the desktop launched and still running: systemd runs each in a unit named "app-<id>..." (firefox in
         // app-firefox@..., haruna in app-org.kde.haruna@1.service), so the unit says which processes are apps and which.
@@ -7706,22 +8445,12 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
         }
         if (now_kind) {
             // iw's link report: the network, the signal, the negotiated rates.
-            std::string ssid, signal, rx, tx, freq;
-            std::istringstream in(run_out("iw dev " + dev + " link 2>/dev/null"));
-            for (std::string line; std::getline(in, line);) {
-                const std::string l = trim(line);
-                auto after = [&](const char* key) { return l.rfind(key, 0) == 0 ? trim(l.substr(std::strlen(key))) : std::string(); };
-                if (auto v = after("SSID:"); !v.empty()) ssid = v;
-                if (auto v = after("signal:"); !v.empty()) signal = v;
-                if (auto v = after("rx bitrate:"); !v.empty()) rx = v.substr(0, v.find(" MBit/s"));
-                if (auto v = after("tx bitrate:"); !v.empty()) tx = v.substr(0, v.find(" MBit/s"));
-                if (auto v = after("freq:"); !v.empty()) freq = v;
-            }
+            const WifiLink w = wifi_link(dev);
+            const std::string &ssid = w.ssid, &signal = w.signal, &rx = w.rx, &tx = w.tx, &freq = w.freq;
             if (ssid.empty()) {
                 res.body = "The Wi-Fi (" + dev + ") isn't connected to a network right now. " + history;
             } else {
-                const double dbm = std::atof(signal.c_str());
-                const char* grade = dbm >= -55 ? "strong" : dbm >= -67 ? "good" : dbm >= -75 ? "fair" : "weak";
+                const char* grade = w.grade;
                 res.body = "The Wi-Fi is connected to \"" + ssid + "\"" + (freq.empty() ? "" : std::atof(freq.c_str()) > 4000 ? " on 5 GHz" : " on 2.4 GHz") +
                            (signal.empty() ? "" : ", with a " + std::string(grade) + " signal (" + signal + ")") +
                            (rx.empty() ? "" : ". The link runs at " + rx + " Mbit/s down" + (tx.empty() ? "" : " and " + tx + " Mbit/s up") +
@@ -8548,13 +9277,20 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
         for (std::size_t i = 0; i < scan.kids.size() && i < 5; ++i)
             top += std::string(i ? (i + 1 == std::min<std::size_t>(5, scan.kids.size()) ? " and " : ", ") : "") + scan.kids[i].first + " " + human_bytes(scan.kids[i].second);
         const bool cut = scan.cut;
-        res.body = "In your home folder (" + human_bytes(scan.total) + (cut ? " counted in 20 s, so at least that" : "") + "), the biggest are " +
-                   top + ". " + space_line(*root) + ".";
-        // "What file is taking the space": the biggest single files the walk passed.
-        if (!scan.largest.empty()) {
-            std::vector<std::string> big;
-            for (const auto& [path, b] : scan.largest) big.push_back(shorten_home(path) + " (" + human_bytes(b) + ")");
-            res.body += " The biggest single files: " + unllm::join_list(big) + ".";
+        const std::string folders = "In your home folder (" + human_bytes(scan.total) + (cut ? " counted in 20 s, so at least that" : "") +
+                                    "), the biggest are " + top + ".";
+        // The biggest single files the walk passed. A question about the largest file leads with them ("what is the
+        // largest file on disk"); one about folders, or space in general, with the folders.
+        std::vector<std::string> big;
+        for (const auto& [path, b] : scan.largest) big.push_back(shorten_home(path) + " (" + human_bytes(b) + ")");
+        const int asked = big.empty() ? 0 : asked_test(r, {{"which folders take the most space", "the biggest folders on the disk"},
+                                                          {"the largest single file on the disk", "which one file is the biggest"}});
+        if (asked == 1) {
+            std::vector<std::string> rest(big.begin() + 1, big.end());
+            res.body = "The largest single file is " + big[0] + (rest.empty() ? "" : ", then " + unllm::join_list(rest)) + ". " + folders + " " +
+                       space_line(*root) + ".";
+        } else {
+            res.body = folders + " " + space_line(*root) + "." + (big.empty() ? "" : " The biggest single files: " + unllm::join_list(big) + ".");
         }
         // "What filled up my drive this week": the folders' sizes are a scan made now; over a past window only the free
         // space is kept, so that is said first, with how it moved.

@@ -59,6 +59,7 @@ struct AskResult {
     bool read_back = false;             // the read-back gate fired: the scope says how the question was taken, for measuring
     std::string span;                   // the time the reading looked at, as text, for measuring
     std::vector<std::string> readings;  // the kind answered and the next four nearest, for measuring
+    std::string nearest;                // the phrasing the question was nearest to, with its score: "cpu temp (0.871)"
     std::vector<std::string> programs;  // the programs the reading named; one found from everyday words shows as
                                         // "movie player -> haruna"
 };
@@ -202,6 +203,7 @@ private:
     bool event_unmatched_ = false;      // the clause, the person's doing or a "during" thing, matched no record set
     std::string event_nearest_;         // when unmatched: what the clause was nearest to, in plain words ("the battery and sleep")
     std::string sleep_note_;            // "while i was asleep": how the sleep was placed from the records
+    std::string question_;              // the question being answered, as typed (file and folder names keep their case and dots)
     std::vector<std::string> condition_tried_;  // words of a "while ..." clause that named no program
 };
 
