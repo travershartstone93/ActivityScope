@@ -162,10 +162,21 @@ int main(int argc, char** argv) {
             std::string progs;
             for (const auto& p : r.programs) progs += (progs.empty() ? "" : ", ") + p;
             std::printf("[programs: %s]\n", progs.empty() ? "-" : progs.c_str());
+            std::printf("[read-back: %s]\n", r.read_back ? "yes" : "no");
         }
         if (!r.receipts.empty()) {
+            // The receipts, a line each; --trace prints them whole, otherwise at most four, cut at a word.
             std::printf("\n");
-            for (const auto& line : r.receipts) std::printf("  %s\n", line.c_str());
+            const std::size_t keep = show_trace ? r.receipts.size() : std::min<std::size_t>(4, r.receipts.size());
+            for (std::size_t i = 0; i < keep; ++i) {
+                std::string line = r.receipts[i];
+                if (!show_trace && line.size() > 120) {
+                    const auto cut = line.rfind(' ', 117);
+                    line = line.substr(0, cut == std::string::npos ? 117 : cut) + "...";
+                }
+                std::printf("  %s\n", line.c_str());
+            }
+            if (keep < r.receipts.size()) std::printf("  and %zu more\n", r.receipts.size() - keep);
         }
     };
     if (!script.empty()) {

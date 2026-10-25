@@ -12,6 +12,7 @@ struct DirNode {
     double bytes = 0;
     long files = 0;
     std::vector<std::unique_ptr<DirNode>> kids;
+    std::vector<std::pair<std::string, double>> largest;  // on the root only: the biggest single files seen, by path
 };
 
 // Walks a folder without following links or crossing onto other drives.

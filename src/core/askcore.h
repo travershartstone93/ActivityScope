@@ -32,7 +32,8 @@ class Sampler;
 // An answer is told in parts, each written by the code that decides it; compose_answer() joins them, with single spaces
 // and each part's own punctuation, in this order:
 //   scope      how the question was taken ("Taking ... as ...:", "Nothing in the records matches ...", "It is only
-//              00:01, so ... Yesterday's:"), in the order said
+//              00:01, so ... Yesterday's:"), in the order said; a reading the read-back gate doubts is said first
+//              ("I took this as a question about ...; if you meant something else, ask with more detail.")
 //   lead       the direct reply to the question's form: "Yes.", "No.", "No: ...", a why's verdict; empty when none
 //   (opening)  "I can't say yes or no to that from the records. What they show:" when undecided
 //   body       the figures and lists
@@ -52,6 +53,7 @@ struct AskResult {
     std::string topic;                  // the lead topic the question was read as ("heat"), for measuring
     std::string when;                   // "now" or "window": the time the reading settled on
     std::string check;                  // what the final check said: "ok", "partly", "doubt", "kind A -> B", "" when off
+    bool read_back = false;             // the read-back gate fired: the scope says how the question was taken, for measuring
     std::string span;                   // the time the reading looked at, as text, for measuring
     std::vector<std::string> readings;  // the kind answered and the next four nearest, for measuring
     std::vector<std::string> programs;  // the programs the reading named; one found from everyday words shows as
@@ -84,6 +86,7 @@ public:
         const bool ok = kinds_.load(dir, cache, model_dir);
         names_.set_model(kinds_.model());  // everyday words to programs (names.h), by the same model
         names_.set_cache(cache + "/names.vec");
+        scan_cache_ = cache + "/space-scan.tsv";  // the last home-folder scan, reused for a few minutes
         return ok;
     }
     // The programs the last question's everyday words named (names.h), best first; empty when the reading
@@ -122,6 +125,11 @@ private:
     // "while the lid was closed": when the reading's "while ..." clause names a state the session log keeps (the lid,
     // sleep, the charger) and no program, a sentence saying when it held in the window or that it never did; "".
     std::string state_lead(const unllm::Reading& r, int64_t now) const;
+    // The test a yes-or-no question asks, of the ones a handler's records settle, each given in a few wordings of the
+    // question it settles (or the recorder's own titles for it): the test with the wording nearest the question by
+    // meaning, by the catalogue's model. -1 when the question sets the window against another time or the usual (the
+    // reading's judge), which none of them settles; the first test without the model.
+    int asked_test(const unllm::Reading& r, const std::vector<std::vector<const char*>>& tests) const;
     void log_miss(const std::string& question, const unllm::Reading& r);
     // One reading answered: the machine handlers in priority order.
     AskResult answer_reading(const unllm::Reading& r, const std::vector<unllm::Token>& tokens,
@@ -155,6 +163,7 @@ private:
     unllm::Card card_;             // the answer being given, filled by the handlers
     std::size_t receipt_offset_ = 0;  // "tell me more": skip what was already shown
     std::string kind_;                // the catalogue kind the current question matched
+    std::string scan_cache_;          // where the last home-folder scan is kept
     Facts facts_;
     unllm::Index index_;
     std::string miss_log_;

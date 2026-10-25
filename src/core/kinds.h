@@ -27,6 +27,10 @@ struct KindMatch {
     float score = 0;       // cosine similarity, 1 is identical
     std::vector<std::pair<std::string, float>> runners;  // every kind with its nearest phrasing's score, best first
     std::vector<std::string> runner_phrasings;           // each runner's nearest phrasing, same order
+    // Every topic with the mean score of its three nearest phrasings (of all its kinds), best first: how near the
+    // question is to the topic as a whole, not to one phrasing of it.
+    std::vector<std::pair<std::string, float>> topics;
+    float topic_score(const std::string& topic) const;   // that mean for one topic, 0 when it has none
 };
 
 class Kinds {
@@ -50,6 +54,9 @@ public:
     bool phrased(const std::string& kind, const std::string& word) const;
     // The sentence model the matcher loaded, for other matching by meaning (names.h); null when not loaded.
     const unllm::Meaning* model() const;
+    // The plain name words.tsv gives a topic or a form ("slow": "CPU load and slowness"); the value itself when it has
+    // none. what is "topic" or "form".
+    std::string plain(const std::string& what, const std::string& value) const;
 
 private:
     struct Impl;

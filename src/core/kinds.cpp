@@ -3,10 +3,12 @@
 #include <sys/stat.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <set>
 #include <sstream>
@@ -45,6 +47,9 @@ struct Kinds::Impl {
     std::vector<QuestionKind> kinds;
     std::map<std::string, std::size_t> index;
     std::vector<int32_t> owner;        // phrasing -> kind index
+    std::vector<std::string> topics;   // the kinds' topics, each once
+    std::vector<int32_t> topic_of;     // kind index -> topic index
+    std::map<std::string, std::string> plain;  // words.tsv: "topic\tslow" -> "CPU load and slowness"
     std::vector<std::string> phrasing;
     std::vector<float> vectors;        // phrasing-major, d floats each, unit length
     std::map<std::string, std::set<std::string>> topics_of;  // a phrasing word -> the topics whose phrasings use it
@@ -100,6 +105,19 @@ bool Kinds::load(const std::string& dir, const std::string& cache, const std::st
         im.index[f[0]] = im.kinds.size();
         im.kinds.push_back({f[0], f[1], f[2], f[3], f[4], f[5], f.size() > 6 ? f[6] : std::string()});
     }
+    im.plain.clear();
+    std::ifstream wf(dir + "/words.tsv");  // optional: plain names for the topics and forms
+    while (std::getline(wf, line)) {
+        auto f = split_tabs(line);
+        if (f.size() >= 3 && !f[0].empty() && f[0][0] != '#') im.plain[f[0] + "\t" + f[1]] = f[2];
+    }
+    im.topics.clear();
+    im.topic_of.clear();
+    for (const auto& k : im.kinds) {
+        const auto at = std::find(im.topics.begin(), im.topics.end(), k.topic);
+        im.topic_of.push_back(int32_t(at - im.topics.begin()));
+        if (at == im.topics.end()) im.topics.push_back(k.topic);
+    }
     std::ifstream pf(dir + "/phrasings.tsv");
     if (!pf || im.kinds.empty()) return false;
     while (std::getline(pf, line)) {
@@ -148,6 +166,11 @@ bool Kinds::phrased(const std::string& kind, const std::string& word) const {
 }
 const unllm::Meaning* Kinds::model() const { return impl_->model.can_embed() ? &impl_->model : nullptr; }
 
+std::string Kinds::plain(const std::string& what, const std::string& value) const {
+    auto it = impl_->plain.find(what + "\t" + value);
+    return it == impl_->plain.end() ? value : it->second;
+}
+
 const QuestionKind* Kinds::find(const std::string& id) const {
     auto it = impl_->index.find(id);
     return it == impl_->index.end() ? nullptr : &impl_->kinds[it->second];
@@ -161,12 +184,18 @@ KindMatch Kinds::match(const std::string& question) const {
     if (int(q.size()) != im.d) return out;
     std::vector<float> best(im.kinds.size(), -2.0f);  // each kind's nearest phrasing
     std::vector<std::size_t> best_at(im.kinds.size(), 0);
+    std::vector<std::array<float, 3>> near(im.topics.size(), {-2.0f, -2.0f, -2.0f});  // each topic's three nearest, best first
     std::size_t top = 0;
     float top_score = -2.0f;
     for (std::size_t i = 0; i < im.phrasing.size(); ++i) {
         const float* v = im.vectors.data() + i * std::size_t(im.d);
         float s = 0;
         for (int k = 0; k < im.d; ++k) s += v[k] * q[std::size_t(k)];
+        auto& three = near[std::size_t(im.topic_of[std::size_t(im.owner[i])])];
+        if (s > three[2]) {
+            three[2] = s;
+            std::sort(three.begin(), three.end(), std::greater<float>());
+        }
         if (s > best[std::size_t(im.owner[i])]) {
             best[std::size_t(im.owner[i])] = s;
             best_at[std::size_t(im.owner[i])] = i;
@@ -188,7 +217,21 @@ KindMatch Kinds::match(const std::string& question) const {
         out.runners.emplace_back(im.kinds[i].id, best[i]);
         out.runner_phrasings.push_back(best[i] > -2.0f ? im.phrasing[best_at[i]] : "");
     }
+    for (std::size_t t = 0; t < im.topics.size(); ++t) {
+        float sum = 0;
+        int n = 0;
+        for (float s : near[t])
+            if (s > -2.0f) sum += s, ++n;
+        if (n) out.topics.emplace_back(im.topics[t], sum / float(n));
+    }
+    std::sort(out.topics.begin(), out.topics.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
     return out;
+}
+
+float KindMatch::topic_score(const std::string& topic) const {
+    for (const auto& [name, score] : topics)
+        if (name == topic) return score;
+    return 0;
 }
 
 }  // namespace as

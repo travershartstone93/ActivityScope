@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstring>
 #include <filesystem>
+#include <sys/stat.h>
 #include <strings.h>
 #include <sstream>
 #include "dirscan.h"
@@ -97,7 +98,13 @@ std::string software_change(sqlite3* db, int64_t t, const std::string& title, co
 std::string run_out(const std::string& cmd);         // a command's output
 std::vector<std::string> oom_kills(sqlite3* db, int64_t from, int64_t to, std::size_t keep, std::size_t* total);
 std::string failed_unit(const std::string& title, const std::string& detail);  // the unit a services row names
-std::string unit_name(const std::string& unit);                                 // a unit as a person reads it
+std::string unit_name(const std::string& unit);
+struct Space {  // a mounted filesystem and its size
+    std::string mount;
+    double total = 0, free = 0;
+};
+std::vector<Space> real_filesystems();          // the real mounted filesystems, with their sizes
+std::string space_line(const Space& s);          // "/ has 117 GB free of 512 GB (77% used)"                                 // a unit as a person reads it
 double swap_size(sqlite3* db, int64_t from, int64_t to, double live);           // the swap's size over a window, 0: unknown
 std::string health_now(const Snapshot& s, double low_battery);                  // the live figures, what is acute first
 double low_battery_level(const std::string& etc);                               // the level the system calls low
@@ -360,9 +367,10 @@ std::string clock_text(int64_t t) {
 // "was firefox open when the fan hit its peak": the moments a reading was at its peak in [from, to) (runs of
 // readings at that value; the per-second samples, or the events' own readings beyond them), and whether the
 // program was running at each. The reading is the samples column a word of the question names ("fan"), else the
-// topic's own (`column`).
+// topic's own (`column`). The yes or no goes to `lead`.
 std::string peak_answer(sqlite3* db, const std::vector<std::string>& words, std::string column, std::string noun,
-                        const std::string& program, int64_t from, int64_t to, int64_t now, std::vector<std::string>* receipts) {
+                        const std::string& program, int64_t from, int64_t to, int64_t now, std::vector<std::string>* receipts,
+                        std::string* lead) {
     for (const auto& c : query(db, "SELECT 0, 0, 0, name FROM pragma_table_info('samples') WHERE type = 'REAL' AND name <> 't'", {}))
         for (const auto& w : words)
             if (w == c.s1) column = w, noun = "the " + w;
@@ -394,8 +402,10 @@ std::string peak_answer(sqlite3* db, const std::vector<std::string>& words, std:
     const std::string unit = column == "temp" ? " C" : "%";
     if (moments.size() > 4) moments.resize(4);
     std::string text = noun + " peaked at " + fmt("%.0f", peak) + unit + " at " + unllm::join_list(moments) + " in that window";
+    text[0] = char(std::toupper(static_cast<unsigned char>(text[0])));
     if (running.empty()) {
-        text = "No: " + text + ", and " + program + " wasn't running at " + (runs.size() == 1 ? "that moment." : "any of those moments.");
+        *lead = "No.";
+        text += ", and " + program + " wasn't running at " + (runs.size() == 1 ? "that moment." : "any of those moments.");
         // When it did run: its processes' lifetimes, joined where they overlap or touch.
         std::vector<std::pair<int64_t, int64_t>> ran;
         for (const auto& x : query(db, "SELECT CAST(started AS INTEGER), IFNULL(ended, ?3) FROM procs WHERE started < ?1 AND IFNULL(ended, ?3) >= ?2 "
@@ -409,10 +419,11 @@ std::string peak_answer(sqlite3* db, const std::vector<std::string>& words, std:
         if (ran.size() > spans.size()) spans.push_back(unllm::number_word(long(ran.size() - spans.size())) + " more");
         text += spans.empty() ? " It didn't run in that window at all." : " It ran at " + unllm::join_list(spans) + ".";
     } else if (running.size() == runs.size()) {
-        text = "Yes: " + text + ", and " + program + " was running at " + (runs.size() == 1 ? "that moment." : "all of them.");
+        *lead = "Yes.";
+        text += ", and " + program + " was running at " + (runs.size() == 1 ? "that moment." : "all of them.");
     } else {
-        text = "Yes, at " + unllm::number_word(long(running.size())) + " of them: " + text + ", and " + program + " was running at " +
-               unllm::join_list(running) + ".";
+        *lead = "Yes, at " + unllm::number_word(long(running.size())) + " of them.";
+        text += ", and " + program + " was running at " + unllm::join_list(running) + ".";
     }
     return text;
 }
@@ -647,6 +658,28 @@ double quantity_threshold(const unllm::Reading& r, const char* unit) {
 // A yes-or-no answer's opening when the records can't settle it.
 const std::string kNoYesNo = "I can't say yes or no to that from the records. What they show:";
 
+// A yes or no the handler's own records settle, as the lead. A question that sets the window against another time or
+// the usual ("more than usual", "than last month": the reading's judge) isn't settled by one window's records: no lead,
+// and the answer says the records can't settle it.
+void settle(AskResult& res, const unllm::Reading& r, bool yes) {
+    if (r.judge == unllm::Judge::None) res.lead = yes ? "Yes." : "No.";
+    else res.undecided = true;
+}
+
+// The yes-or-no tests the heat readings settle, each as a question it answers (Ask::asked_test): the recorder's hot level,
+// the fan at the level it counts as loud, the shutdown point near (measured with bge-small on 21 heat questions: "did my
+// laptop overheat last night", "was it hot yesterday" 0; "did the fan scream last night" 1; "did it nearly shut down
+// from heat" 2).
+const std::vector<std::vector<const char*>> kHeatTests = {{"did it overheat"}, {"did the fan get loud"},
+                                                          {"did it nearly reach the temperature where it shuts down"}};
+
+// realize_polar's yes or no in its parts: the lead by settle, and the clauses as their own sentences. A body that
+// opens with "No " ("No crashes were recorded") is already the no, as realize_polar has it.
+void polar_answer(AskResult& res, const unllm::Reading& r, bool yes, const std::vector<Clause>& clauses) {
+    res.body = unllm::realize(clauses);
+    if (yes || res.body.compare(0, 3, "No ") != 0) settle(res, r, yes);
+}
+
 // The sleep the session log puts a moment in, said in a sentence; "" when the machine was awake (with the session log's
 // other helpers, below).
 std::string asleep_at(sqlite3* db, int64_t at, int64_t now);
@@ -775,6 +808,7 @@ AskResult Ask::ask_once(const std::string& question, int64_t now, const std::str
     const QuestionKind* unanswered = nullptr;  // the nearest kind is one ask has no records for
     std::string space_kind;                    // a free-disk-space question, answered by answer_space
     float kind_score = 1;                      // how near the question is to that kind's nearest phrasing
+    bool doubted = false;                      // the read-back gate below doubts the reading
     std::vector<std::string> readings;
     if (kinds_.ready()) {
         // The speller's fixes are guesses toward the analyzer's words ("health" became "healthy"):
@@ -834,14 +868,25 @@ AskResult Ask::ask_once(const std::string& question, int64_t now, const std::str
         for (const auto& e : reading.entities)
             what_is |= e.type == "name" || (e.type == "program" && reading.frame == unllm::Frame::Define);
         if (what_is) space_kind.clear();
+        static const std::map<std::string, Intent> by_name = [] {
+            std::map<std::string, Intent> m;
+            for (int i = 0; i <= int(Intent::Story); ++i) m[unllm::intent_name(Intent(i))] = Intent(i);
+            m["updates"] = Intent::Update;
+            m["crashes"] = Intent::Crash;
+            return m;
+        }();
+        // The read-back gate: the chosen topic as a whole is far from the question (its three nearest phrasings average
+        // under 0.83) and the analyzer's own reading, before the topic is put first, names another topic or none. On 195
+        // new questions (2026-10-24) that marked 17 of the 26 answers judged wrong and 2 of the 88 judged right, and on
+        // other questions more right ones, so the answer stays and says how the question was taken. Not for a forced
+        // kind, a "what is", or "none" (answered only for a path).
+        if (const QuestionKind* k = kinds_.find(km.id); k && force_kind.empty() && k->topic != "none" && !what_is) {
+            const auto it = by_name.find(k->topic);
+            const auto& own = turn.reading.intents;
+            doubted = km.topic_score(k->topic) < 0.83f &&
+                      (it == by_name.end() || std::find(own.begin(), own.end(), it->second) == own.end());
+        }
         if (const QuestionKind* k = kinds_.find(km.id); k && k->topic != "none" && !what_is) {
-            static const std::map<std::string, Intent> by_name = [] {
-                std::map<std::string, Intent> m;
-                for (int i = 0; i <= int(Intent::Story); ++i) m[unllm::intent_name(Intent(i))] = Intent(i);
-                m["updates"] = Intent::Update;
-                m["crashes"] = Intent::Crash;
-                return m;
-            }();
             if (auto it = by_name.find(k->topic); it != by_name.end()) {
                 reading.intents.erase(std::remove(reading.intents.begin(), reading.intents.end(), it->second), reading.intents.end());
                 reading.intents.insert(reading.intents.begin(), it->second);
@@ -1107,6 +1152,13 @@ AskResult Ask::ask_once(const std::string& question, int64_t now, const std::str
             if (t.lower == "morning" || t.lower == "afternoon" || t.lower == "evening") part = "this " + t.lower;
         res.scope.insert(res.scope.begin(), "It is only " + std::string(hm) + ", so " + part + " hasn't started yet. Yesterday's:");
     }
+    // A reading the read-back gate doubts is said first, in the catalogue's words for the kind; the answer stays. Not on
+    // the honest reply or a request to clarify (refused), which answer no kind.
+    if (fresh_ && doubted && !res.refused) {
+        res.scope.insert(res.scope.begin(), "I took this as a question about " + kind_words(kind_) +
+                                                "; if you meant something else, ask with more detail.");
+        res.read_back = true;
+    }
     for (const auto& [typed, meant] : spelling) res.receipts.push_back("spelling: " + typed + " -> " + meant);
     if (fresh && !reading.event_clause.empty())
         res.receipts.push_back(event_at_ ? "event: " + event_what_ + " (" + when_text(event_at_) + ")"
@@ -1291,8 +1343,8 @@ std::string Ask::kind_words(const std::string& kind) const {
     const QuestionKind* k = kinds_.find(kind);
     if (!k) return kind;
     if (k->topic == "none") return "outside what the records hold";
-    const std::string when = k->window == "now" ? "now" : k->window == "window" ? "over a past time" : "now or over a past time";
-    return k->topic + ": " + k->form + ", " + when;
+    const std::string when = k->window == "now" ? "now" : k->window == "window" ? "in the past" : "now or in the past";
+    return kinds_.plain("topic", k->topic) + " (" + kinds_.plain("form", k->form) + ", " + when + ")";
 }
 
 // "while the lid was closed": a "while ..." clause that names no program, checked against the states the session log
@@ -1350,6 +1402,23 @@ std::string Ask::state_lead(const unllm::Reading& r, int64_t now) const {
     }
     text[0] = char(std::toupper(static_cast<unsigned char>(text[0])));
     return text;
+}
+
+int Ask::asked_test(const unllm::Reading& r, const std::vector<std::vector<const char*>>& tests) const {
+    if (r.judge != unllm::Judge::None) return -1;
+    const unllm::Meaning* model = kinds_.model();
+    if (!model || !model->can_embed()) return 0;
+    const auto q = model->embed(card_.question, false);
+    int pick = 0;
+    float best = -2;
+    for (std::size_t i = 0; i < tests.size(); ++i)
+        for (const char* w : tests[i]) {
+            const auto v = model->embed(w, false);
+            float d = 0;
+            for (std::size_t k = 0; k < q.size() && k < v.size(); ++k) d += q[k] * v[k];
+            if (d > best) best = d, pick = int(i);
+        }
+    return pick;
 }
 
 std::vector<std::string> Ask::named_words(const unllm::Reading& r, const std::string& kind) const {
@@ -1456,6 +1525,7 @@ AskResult Ask::ask(const std::string& question, int64_t now) {
                     AskResult res = one;
                     res.answer = one.answer + " " + two.answer;
                     res.branch = one.branch + " + " + two.branch;
+                    res.read_back = one.read_back || two.read_back;
                     res.receipts.insert(res.receipts.end(), two.receipts.begin(), two.receipts.end());
                     res.programs.insert(res.programs.end(), two.programs.begin(), two.programs.end());
                     return res;
@@ -1507,6 +1577,7 @@ AskResult Ask::ask(const std::string& question, int64_t now) {
                     std::string span = window_.live || window_.present ? "as about now"
                                        : window_.from > 0 ? "as about " + span_text(window_.from, window_.to, " to ")
                                                           : "";
+                    if (res.read_back) res.scope.erase(res.scope.begin());  // the gate's read-back, said again here
                     res.scope.insert(res.scope.begin(), "I may have misread this. I took it as a question about " + kind_words(kind) +
                                                             (span.empty() ? "" : ", " + span) + ", and found:");
                     res.check = (res.check.empty() ? "" : res.check + "; ") + "doubt (" + v->why + ")";
@@ -1701,8 +1772,8 @@ AskResult Ask::answer_reading(const unllm::Reading& r, const std::vector<unllm::
                 res.body = "Nothing is broken that the rules can see; " + culprit + " did most of that work in the "
                            "last 30 days, so closing or pausing it is the lever. Nothing has been run for you.";
             } else {
-                res.body = std::string(advice ? "Nothing in the records needs doing about " : "No: nothing in the records "
-                                                "says there is a problem with ") +
+                if (!advice) res.lead = "No.";
+                res.body = std::string(advice ? "Nothing in the records needs doing about " : "Nothing in the records says there is a problem with ") +
                            topic + " in the last 30 days.";
             }
         }
@@ -1742,13 +1813,9 @@ AskResult Ask::answer_reading(const unllm::Reading& r, const std::vector<unllm::
                 std::string body = r.choices[std::size_t(a)] + " used more CPU " + reach + ": about " + side(a) + ", against " +
                                    r.choices[std::size_t(b)] + "'s " + (sum[b] > 0 ? side(b) : "none recorded") +
                                    (sum[b] > 0 && sum[a] >= 1.5 * sum[b] ? ", " + fmt("%.1f", sum[a] / sum[b]) + " times as much" : "") + ".";
-                if (polar) {
-                    const bool yes = r.degree == Degree::Least ? sum[0] < sum[1] : sum[0] > sum[1];
-                    res.body = std::string(yes ? "Yes, " : "No, ") + body;
-                } else {
-                    body[0] = char(std::toupper(static_cast<unsigned char>(body[0])));
-                    res.body = body;
-                }
+                if (polar) settle(res, r, r.degree == Degree::Least ? sum[0] < sum[1] : sum[0] > sum[1]);
+                body[0] = char(std::toupper(static_cast<unsigned char>(body[0])));
+                res.body = body;
                 res.receipts.push_back("per-minute CPU, each minute held to what the whole machine used in it");
                 res.branch = "choice";
                 card_.subject = r.choices[std::size_t(a)];
@@ -2267,6 +2334,7 @@ AskResult Ask::answer_reading(const unllm::Reading& r, const std::vector<unllm::
                            fmt(" (the whole machine is at %.0f%%)", s->cpu.total) + ".";
             }
             if (n > 1) res.body += " That's " + std::to_string(n) + " processes together.";
+            if (polar) res.lead = n > 0 ? "Yes." : "No.";
             // "whats that node thing": what the processes are, longest running first: the script an interpreter runs
             // (else the command), the unit it runs in and since when.
             if (n > 0 && !polar && r.judge == unllm::Judge::None && r.wants != unllm::Wants::Quantity) {
@@ -2366,6 +2434,23 @@ AskResult Ask::answer_reading(const unllm::Reading& r, const std::vector<unllm::
                 clauses.push_back({{"no graphics card", true}, "be", "visible to the recorder", Tense::Present});
                 break;
             }
+            // "What percentage of VRAM is in use": the video memory first, as a share, and its receipts are the memory.
+            if (kind_ == "gpu.value.now.vram") {
+                for (const auto& g : s->gpus) {
+                    const std::string name = g.name.empty() ? "the GPU" : g.name;
+                    if (g.mem_used.ok() && g.mem_total.ok() && g.mem_total.get() > 0) {
+                        const double pct = 100.0 * g.mem_used.get() / g.mem_total.get();
+                        clauses.push_back({{name, true}, "have", fmt("%.0f%% of its video memory in use: ", pct) + human_bytes(g.mem_used.get()) +
+                                                                     " of " + human_bytes(g.mem_total.get()), Tense::Present});
+                        res.receipts.push_back(name + "  " + human_bytes(g.mem_used.get()) + " of " + human_bytes(g.mem_total.get()) + " video memory");
+                    } else {
+                        res.receipts.push_back(name + "  no video memory figure");
+                    }
+                }
+                if (clauses.empty()) clauses.push_back({{"no graphics card", true}, "report", "its video memory", Tense::Present});
+                card_.subject = "the GPU";
+                break;
+            }
             for (const auto& g : s->gpus) {
                 std::string name = g.name.empty() ? "the GPU" : g.name;
                 if (g.asleep) {
@@ -2422,14 +2507,22 @@ AskResult Ask::answer_reading(const unllm::Reading& r, const std::vector<unllm::
                 Clause c{{"it", true}, "be", "plugged in" + (state.empty() ? "" : ", " + state) +
                                                  (charging && !minutes.empty() ? ", about " + minutes : ""),
                          Tense::Present};
-                res.body = polar ? unllm::realize_polar(false, {c}) : unllm::realize({c});
+                res.body = unllm::realize({c});
             } else {
                 double w = s->power.battery_w.or_else(-1);
                 std::string rest = "on battery" + (state.empty() ? "" : ", " + state);
                 if (w > 0) rest += fmt(", drawing %.0f W", w);
                 if (!minutes.empty()) rest += ": about " + minutes;
                 Clause c{{"it", true}, "be", rest, Tense::Present};
-                res.body = polar ? unllm::realize_polar(true, {c}) : unllm::realize({c});
+                res.body = unllm::realize({c});
+            }
+            // A yes or no is about one side, on battery or on the charger: the one the question is nearer by meaning, by
+            // the recorder's titles for it and an everyday sentence ("is my laptop plugged in" asks about the charger).
+            if (polar) {
+                const int side = asked_test(r, {{"Unplugged from power", "it is running on battery"},
+                                                {"Plugged into power", "it is plugged into the charger"}});
+                if (side < 0) res.undecided = true;
+                else res.lead = (side == 0 ? !on_ac : on_ac) ? "Yes." : "No.";
             }
             // A worn battery is named before any software gets blamed.
             if (s->power.battery_health.ok() && s->power.battery_health.get() < 80)
@@ -2484,6 +2577,12 @@ AskResult Ask::answer_reading(const unllm::Reading& r, const std::vector<unllm::
             for (const auto& d : s->disks)
                 if (res.receipts.size() < 5)
                     res.receipts.push_back(d.name + "  read " + human_bytes(d.read_bps) + "/s  write " + human_bytes(d.write_bps) + "/s");
+            // "Disk usage" means how busy to some and how full to others: both are given.
+            for (const auto& f : real_filesystems())
+                if (f.mount == "/") {
+                    res.notes.push_back(space_line(f) + ".");
+                    break;
+                }
             break;
         }
         case Intent::Network: {
@@ -2541,7 +2640,18 @@ AskResult Ask::answer_reading(const unllm::Reading& r, const std::vector<unllm::
         if (polar && lead == Intent::Heat) {
             double thr = quantity_threshold(r, "C");
             double t = s->cpu.temp_c.or_else(s->guard.temp.or_else(-1));
-            res.body = unllm::realize_polar(thr >= 0 ? t >= thr : t >= Triggers().temp, clauses);
+            bool yes = thr >= 0 ? t >= thr : t >= Triggers().temp, settled = true;
+            // With no level named, the test the question asks (kHeatTests): hot, the fan loud, the shutdown point near.
+            if (thr < 0) {
+                const int test = asked_test(r, kHeatTests);
+                double fan = -1;
+                for (const auto& f : s->power.fans)
+                    if (f.percent.ok() && fan < 0) fan = double(f.percent.get());
+                if (test == 1) settled = fan >= 0, yes = fan >= Triggers().fan;
+                if (test == 2) settled = s->guard.margin.ok() && s->guard.margin.get() >= 0, yes = s->guard.margin.or_else(999) < Triggers().shutdown_margin;
+            }
+            if (settled) polar_answer(res, r, yes, clauses);
+            else res.undecided = true;
         }
         // The level it is judged by, and what is usual here: the last day's readings' middle value (the hourly records'
         // over 30 days when the readings hold too few).
@@ -2594,7 +2704,7 @@ AskResult Ask::answer_reading(const unllm::Reading& r, const std::vector<unllm::
                                : lead == Intent::Memory ? "memory use" : "GPU load";
             std::vector<std::string> words;
             for (const auto& t : tokens) words.push_back(t.lower);
-            const std::string a = peak_answer(db_, words, column, noun, program, sfrom, to, now, &res.receipts);
+            const std::string a = peak_answer(db_, words, column, noun, program, sfrom, to, now, &res.receipts, &res.lead);
             if (!a.empty()) {
                 res.body = a;
                 res.branch = "most:peak";
@@ -2907,18 +3017,16 @@ AskResult Ask::answer_reading(const unllm::Reading& r, const std::vector<unllm::
             if (runs.size() > said.size()) said.push_back(unllm::number_word(long(runs.size() - said.size())) + " more");
             std::string body = program + " ran for " + duration_text(total) + " in that window, in " +
                                (runs.size() == 1 ? std::string("one run") : unllm::number_word(long(runs.size())) + " runs") + ": " + unllm::join_list(said) + ".";
-            if (polar) {
-                body = "Yes, " + body;
-            } else {
-                body[0] = char(std::toupper(static_cast<unsigned char>(body[0])));
-            }
+            if (polar) settle(res, r, true);
+            body[0] = char(std::toupper(static_cast<unsigned char>(body[0])));
             res.body = body;
             add_receipts("SELECT started,0,0,name || '  pid ' || pid FROM procs WHERE started < ? AND IFNULL(ended, ?) >= ? AND is_program(?, name, exe, cmdline) ORDER BY started DESC",
                          {to, now, from}, {program});
         } else {
             Clause c{{program, true}, "run", "in that window", Tense::Past};
             c.negated = true;
-            res.body = polar ? unllm::realize_polar(false, {c}) : unllm::realize({c});
+            if (polar) polar_answer(res, r, false, {c});
+            else res.body = unllm::realize({c});
         }
         res.branch = "program:duration";
         card_.subject = program;
@@ -2996,12 +3104,14 @@ AskResult Ask::answer_reading(const unllm::Reading& r, const std::vector<unllm::
                 const Run& w = runs[0];
                 const Fact* f = known(w.name);
                 const int64_t seen = first_seen(w.name);
-                res.body = "Maybe: " + shown_name(w.name, w.cmdline) + " used " + level + " or more for " + duration_text(w.to + 60 - w.from) +
+                res.lead = "Maybe.";
+                res.body = shown_name(w.name, w.cmdline) + " used " + level + " or more for " + duration_text(w.to + 60 - w.from) +
                            " without a break, from " + run_span(w.from, w.to + 60) + "; " +
                            (f ? "it is a program I know, " + f->explanation + "."
                               : seen < from ? "it isn't a program I know, but it has run here since " + when_text(seen) + "."
                                             : "it isn't a program I know, and it first ran " + when_text(seen) + ".") +
                            listed;
+                res.body[0] = char(std::toupper(static_cast<unsigned char>(res.body[0])));
             } else {
                 const std::string longest = runs.empty() ? " (none did for a whole minute)"
                                                          : " (the longest stretch was " + duration_text(runs[0].to + 60 - runs[0].from) + ", " +
@@ -3353,7 +3463,36 @@ AskResult Ask::answer_reading(const unllm::Reading& r, const std::vector<unllm::
                 bool yes = true;
                 double thr = quantity_threshold(r, lead == Intent::Heat ? "C" : "%");
                 if (thr >= 0) yes = peak >= thr;
-                res.body = unllm::realize_polar(yes, clauses);
+                // A heat event opens on a quick rise, the fan and the shutdown margin as well as the hot level, so an event
+                // is no yes for heat: the test the question asks is, against the recorder's own level for it.
+                const Triggers trig;
+                std::string no;  // the reason a no is a no
+                bool settled = true;
+                if (thr < 0 && lead == Intent::Heat) {
+                    const int test = asked_test(r, kHeatTests);
+                    if (test == 0) {
+                        yes = peak >= trig.temp;
+                        no = "No: it stayed under " + fmt("%.0f C", trig.temp) + ", the level the recorder counts as hot.";
+                    } else if (test == 1) {
+                        auto fan = query(db_, std::string(kEventParts) + "SELECT COUNT(*), IFNULL(MAX(e.peak_fan), -1) FROM p JOIN events e ON e.id = p.id "
+                                              "WHERE p.part > 0" + cond, {from, to, int64_t(mask)}, cond_tb);
+                        const double top = fan.empty() ? -1 : fan[0].a;
+                        settled = top >= 0;
+                        yes = top >= trig.fan;
+                        no = "No: the fan stayed under " + fmt("%.0f%%", trig.fan) + ", the level the recorder counts as loud.";
+                    } else if (test == 2) {
+                        settled = agg[0].b >= 0 && agg[0].b < 999;
+                        yes = agg[0].b < trig.shutdown_margin;
+                        no = "No: it came no closer than " + fmt("%.0f C", agg[0].b) + " to the shutdown point.";
+                    }
+                }
+                if (settled) {
+                    polar_answer(res, r, yes, clauses);
+                    if (res.lead == "No." && !no.empty()) res.lead = no;
+                } else {
+                    res.undecided = true;
+                    res.body = unllm::realize(clauses);
+                }
             } else if (polar) {
                 res.undecided = true;
                 res.body = unllm::realize(clauses);
@@ -3578,7 +3717,8 @@ AskResult Ask::answer_reading(const unllm::Reading& r, const std::vector<unllm::
             started = started && s;
         }
         Clause c{{noun, false, long(rows.size())}, "be", "recorded in that window", Tense::Past};
-        res.body = polar && !started ? unllm::realize_polar(!rows.empty(), {c}) : unllm::realize({c});
+        if (polar && !started) polar_answer(res, r, !rows.empty(), {c});
+        else res.body = unllm::realize({c});
         // Say what they were, newest first, each different line once, not just how many.
         {
             std::vector<std::string> named = changes;
@@ -3637,7 +3777,8 @@ AskResult Ask::answer_reading(const unllm::Reading& r, const std::vector<unllm::
         sql += " ORDER BY first_seen DESC";
         auto rows = query(db_, sql, {from, to}, program.empty() ? std::vector<std::string>{} : std::vector<std::string>{program});
         Clause c{{"new connection", false, long(rows.size())}, "be", "recorded in that window", Tense::Past};
-        res.body = polar ? unllm::realize_polar(!rows.empty(), {c}) : unllm::realize({c});
+        if (polar) polar_answer(res, r, !rows.empty(), {c});
+        else res.body = unllm::realize({c});
         for (const auto& row : rows)
             if (res.receipts.size() < 6) res.receipts.push_back(when_text(row.t) + "  " + row.s1);
         return res;
@@ -3848,18 +3989,22 @@ AskResult Ask::answer_reading(const unllm::Reading& r, const std::vector<unllm::
             const std::string event = r.event_clause + " at " + clock_text(event_at_);
             if (!alive.empty()) {
                 const Row& p = alive.front();
-                res.body = "Yes, " + program + " is still running: " + p.s1 + " (PID " + std::to_string(int64_t(p.a)) + ") has run since " +
+                settle(res, r, true);
+                res.body = program + " is still running: " + p.s1 + " (PID " + std::to_string(int64_t(p.a)) + ") has run since " +
                            moment_text(p.t) +
                            (p.t < event_at_         ? ", from before " + event
                             : p.t - event_at_ < 60 ? ", " + std::to_string(p.t - event_at_) + " seconds after " + event
                                                    : ", " + duration_text(p.t - event_at_) + " after " + event) +
                            ".";
                 if (alive.size() > 1) res.body += " " + std::to_string(alive.size() - 1) + " more of its processes are running too.";
+                res.body[0] = char(std::toupper(static_cast<unsigned char>(res.body[0])));
             } else {
                 auto last = query(db_, "SELECT CAST(MAX(ended) AS INTEGER) FROM procs WHERE is_program(?1, name, exe, cmdline)", {}, {program});
-                res.body = "No, " + program + " isn't running" +
+                settle(res, r, false);
+                res.body = program + " isn't running" +
                            (!last.empty() && last[0].t > 0 ? ": its last process ended " + moment_text(last[0].t) : std::string()) +
                            " (" + event + ").";
+                res.body[0] = char(std::toupper(static_cast<unsigned char>(res.body[0])));
             }
             add_receipts("SELECT started,0,0,name || '  pid ' || pid || CASE WHEN ended IS NULL THEN '  running' ELSE '  ended' END "
                          "FROM procs WHERE started < ? AND IFNULL(ended, ?) >= ? AND is_program(?, name, exe, cmdline) ORDER BY started DESC",
@@ -3875,11 +4020,13 @@ AskResult Ask::answer_reading(const unllm::Reading& r, const std::vector<unllm::
         Clause c{{program, true}, "run", "", Tense::Past};
         if (n > 0) {
             c.rest = n == 1 ? "once in that window" : unllm::number_word(n) + " times in that window";
-            res.body = polar ? unllm::realize_polar(true, {c}) : unllm::realize({c});
+            if (polar) polar_answer(res, r, true, {c});
+            else res.body = unllm::realize({c});
         } else {
             c.negated = true;
             c.rest = "in that window";
-            res.body = polar ? unllm::realize_polar(false, {c}) : unllm::realize({c});
+            if (polar) polar_answer(res, r, false, {c});
+            else res.body = unllm::realize({c});
         }
         add_receipts("SELECT started,0,0,name || '  pid ' || pid FROM procs WHERE started < ? AND IFNULL(ended, ?) >= ? AND is_program(?, name, exe, cmdline) ORDER BY started DESC",
                      {to, now, from}, {program});
@@ -4284,11 +4431,6 @@ namespace {
 
 // One mounted filesystem's size, from statvfs. Pseudo filesystems and second
 // mounts of the same device (btrfs subvolumes) are left out.
-struct Space {
-    std::string mount;
-    double total = 0, free = 0;
-};
-
 std::vector<Space> real_filesystems() {
     std::vector<Space> out;
     std::set<std::string> seen;
@@ -4371,7 +4513,7 @@ bool answers_from_records(const std::string& kind) {
                                             "gpu.value.window", "diagnose.compare.window", "battery.value.now",
                                             "network.inbound.window", "disk.health.now", "identity.bios.flash",
                                             "story.often.window.process", "network.new.list.window", "slow.procs.value.window",
-                                            "slow.above.value.window", "identity.list"};
+                                            "slow.above.value.window", "identity.list", "programs.list.now", "programs.installed.now"};
     return k.count(kind) > 0 || from_logs(kind);
 }
 
@@ -4689,6 +4831,29 @@ std::vector<Low> battery_lows(sqlite3* db, int64_t from, int64_t to, int64_t* re
     }
     std::sort(out.begin(), out.end(), [](const Low& a, const Low& b) { return a.t < b.t; });
     return out;
+}
+
+// The highest the battery got in [from, to) and the first moment it was there: the per-second readings where they
+// reach, before them each hourly record's highest (its hour), and the level the log gives at each unplug (the charge it
+// set out with; plug). t 0: nothing recorded.
+Low battery_high(sqlite3* db, int64_t from, int64_t to, int64_t* readings_from) {
+    Low top{0, -1, false};
+    auto take = [&](int64_t t, double level, bool plug) {
+        if (level > top.level || (level == top.level && t < top.t)) top = {t, level, plug};
+    };
+    auto first = query(db, "SELECT CAST(MIN(t) AS INTEGER) FROM samples WHERE battery_pct >= 0 AND t >= ? AND t < ?", {from, to});
+    *readings_from = first.empty() ? 0 : first[0].t;
+    if (*readings_from) {
+        auto hi = query(db, "SELECT CAST(t AS INTEGER), battery_pct FROM samples WHERE battery_pct >= 0 AND t >= ? AND t < ? ORDER BY battery_pct DESC, t LIMIT 1",
+                        {from, to});
+        if (!hi.empty()) take(hi[0].t, hi[0].a, false);
+    }
+    for (const auto& h : query(db, "SELECT hour_ts, max FROM samples_hourly WHERE metric = 'battery_pct' AND max >= 0 AND hour_ts >= ? AND hour_ts < ?",
+                               {from, *readings_from ? *readings_from : to}))
+        take(h.t, h.a, false);
+    for (const auto& p : plugs(db, from, to))
+        if (!p.in && p.level >= 0) take(p.t, p.level, true);
+    return top;
 }
 
 // One out-of-memory kill as the log holds it: the unit systemd says failed with result 'oom-kill', and the
@@ -5447,7 +5612,7 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
         std::string program;
         for (const auto& e : r.entities)
             if (e.type == "program") program = e.value;
-        const std::string a = program.empty() ? "" : peak_answer(db_, r.terms, "fan", "the fan", program, from, to, now, &res.receipts);
+        const std::string a = program.empty() ? "" : peak_answer(db_, r.terms, "fan", "the fan", program, from, to, now, &res.receipts, &res.lead);
         if (!a.empty()) {
             res.body = a;
             res.branch = "records:fan-peak";
@@ -5542,7 +5707,40 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
         auto from_where = [&](const Low& l) {
             return readings_from && l.t >= readings_from ? std::string() : l.plug ? " (when the charger went back in, from the log)" : " (from the hourly records)";
         };
-        if (polar && least) {
+        // A yes or no: whether it got low, whether it charged fully, or the battery's wear, which a window's levels can't
+        // settle (asked_test; with the matcher's model 27 of 30 wordings measured go to their own test, the misses ties
+        // that fall to the first).
+        const int test = polar && !fan ? asked_test(r, {{"did the battery get low", "did the battery run down", "did the battery go flat"},
+                                                        {"did the battery charge fully", "did the battery fill up to 100%", "did it reach a full charge"},
+                                                        {"is the battery wearing out", "is the battery health getting worse", "is the battery losing capacity"}})
+                                       : 0;
+        if (polar && test == 1) {
+            // "did the battery charge fully last night": the latest plug-in in the window (the log's charger rows and the
+            // readings), then the highest level after it and when it first got there.
+            const auto ps = plugs(db_, from, to);
+            const Plug* in = nullptr;
+            for (const auto& p : ps)
+                if (p.in) in = &p;
+            int64_t readings = 0;
+            const Low top = battery_high(db_, in ? in->t : from, to, &readings);
+            if (top.t) {
+                const bool yes = top.level >= 99.5;
+                const std::string when = top.plug ? "at " + when_text(top.t) + " (when the charger came out, from the log)"
+                                         : readings && top.t >= readings ? "at " + when_text(top.t)
+                                                                         : "in the hour from " + when_text(top.t) + " (from the hourly records)";
+                res.lead = yes ? "Yes." : "No.";
+                res.body = (in ? "It was plugged in at " + when_text(in->t) + (in->level >= 0 ? ", at " + fmt("%.0f", in->level) + "%," : "") + " and "
+                               : std::string("It ")) +
+                           (yes ? (in ? "reached 100% " : "was at 100% ") : "got no higher than " + fmt("%.0f", top.level) + "%, ") + when + ".";
+                res.receipts.push_back((in ? "plugged in " + when_text(in->t) + ", " : std::string()) + "highest after it " + fmt("%.0f", top.level) +
+                                       "% " + when);
+                res.branch = "records:battery-full";
+                return res;
+            }
+        }
+        // The wear, a time set against another, or nothing to tell a full charge by: the window's levels, below.
+        if (polar && !fan && test != 0) res.undecided = true;
+        if (polar && test == 0 && least) {
             // "did the battery get low": against the level the system itself calls low.
             const double low = low_battery_level(roots_.etc);
             std::vector<std::string> under;
@@ -5848,7 +6046,8 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
         for (auto it = found.rbegin(); it != found.rend() && res.receipts.size() < 6; ++it) res.receipts.push_back(when_text(it->t) + "  " + it->text);
         res.branch = "records:crashes";
         if (found.empty()) {
-            res.body = std::string(polar ? "No: no" : "No") + " crash or failed unit" + of + " was recorded " + where + ".";
+            if (polar) settle(res, r, false);
+            res.body = "No crash or failed unit" + of + " was recorded " + where + ".";
             return res;
         }
         card_.moment = found.back().t;
@@ -5880,7 +6079,8 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
         }
         if (kind == "crashes.when.window") {
             const Mishap& m = found.back();
-            res.body = std::string(yes ? "Yes: the" : "The") + " latest crash record" + of + " " + where + " is from " + moment_text(m.t) +
+            if (yes) settle(res, r, true);
+            res.body = "The latest crash record" + of + " " + where + " is from " + moment_text(m.t) +
                        ": " + m.text + aftermath(m) + ".";
             if (count_of(found) > 1) res.body += " It is one of " + std::to_string(count_of(found)) + " " + where + ".";
             return res;
@@ -5912,7 +6112,7 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
                                      : "Its unit failed " + times(n)) +
                     ": " + said(failed, false) + ".";
         }
-        if (yes) res.lead = "Yes.";
+        if (yes) settle(res, r, true);
         res.body = text;
         // The same program's records in the week before, so "again" has its history.
         if (!program.empty() && !all && to - from < 7 * 86400) {
@@ -6068,7 +6268,7 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
         if (polar) {
             const bool any = verb == "added" ? !added.empty() : verb == "removed" ? !removed.empty()
                                                               : !(added.empty() && replaced.empty() && removed.empty() && other.empty());
-            res.lead = any ? "Yes." : "No.";
+            settle(res, r, any);
         }
         for (std::size_t i = rows.size() > 6 ? rows.size() - 6 : 0; i < rows.size(); ++i)
             res.receipts.push_back(when_text(rows[i].t) + "  " + rows[i].what + (rows[i].verb.empty() ? "" : " " + rows[i].verb + ": " + rows[i].path));
@@ -6137,13 +6337,15 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
             if (res.receipts.size() < 6) res.receipts.push_back(when_text(s.went) + "  went to sleep" + (s.woke ? ", woke " + when_text(s.woke) : ""));
         res.branch = "records:sleep";
         if (in.empty()) {
-            res.body = std::string(polar ? "No: it" : "It") + " stayed awake " + where + ": no sleep was recorded.";
+            if (polar) settle(res, r, false);
+            res.body = "It stayed awake " + where + ": no sleep was recorded.";
             return res;
         }
         // "When" with no time named is the latest; a day or a span named gets every sleep in it, below.
         if (when && (all || in.size() == 1)) {
             const Sleep& s = in.back();
-            res.body = std::string(polar ? "Yes: it" : "It") + " went to sleep at " + when_text(s.went) + (s.lid ? " (lid closed)" : "") +
+            if (polar) settle(res, r, true);
+            res.body = "It went to sleep at " + when_text(s.went) + (s.lid ? " (lid closed)" : "") +
                        (s.woke ? " and woke at " + when_text(s.woke) + ", after " + duration_text(s.woke - s.went) : " and hasn't woken since") + ".";
             card_.moment = s.woke ? s.woke : s.went;
             return res;
@@ -6163,7 +6365,8 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
         }
         std::vector<std::string> said;
         for (const auto& s : in) said.push_back(one(s));
-        res.body = std::string(polar ? "Yes: it" : "It") + " slept " + times(n) + " " + where + ": " + unllm::join_list(said) + ".";
+        if (polar) settle(res, r, true);
+        res.body = "It slept " + times(n) + " " + where + ": " + unllm::join_list(said) + ".";
         return res;
     }
     if (kind.rfind("battery.charger.", 0) == 0 || kind.rfind("battery.lid.", 0) == 0 || kind.rfind("startup.login.", 0) == 0) {
@@ -6247,15 +6450,15 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
             res.receipts.push_back(when_text(marks[*it].t) + "  " + s.verb + level(marks[*it]));
         if (in.empty()) {
             const std::string where = latest ? "in the records" : span;
-            res.body = capital(std::string(polar ? "no: " : "") +
-                               (login ? "you didn't " + std::string(s.base) : std::string(charger ? "the charger wasn't " : "the lid wasn't ") + s.verb) + " " +
+            if (polar) settle(res, r, false);
+            res.body = capital((login ? "you didn't " + std::string(s.base) : std::string(charger ? "the charger wasn't " : "the lid wasn't ") + s.verb) + " " +
                                where + ".");
             return res;
         }
         if (latest) {
             const Mark& m = marks[in.back()];
             const Mark* after = back(in.back());
-            if (polar) res.lead = "Yes.";
+            if (polar) settle(res, r, true);
             res.body = who + " last " + s.verb + " on " + moment_text(m.t) + level(m) +
                        (after ? "; " + std::string(login ? "you " : "it was ") + o.verb + " at " + when_text(after->t) + level(*after)
                               : login ? "; you haven't " + std::string(o.verb) + " since" : "; it hasn't been " + std::string(o.verb) + " since") + ".";
@@ -6298,7 +6501,7 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
             said.push_back(item);
         }
         if (skip) said.insert(said.begin(), std::to_string(skip) + " earlier");
-        if (polar) res.lead = "Yes.";
+        if (polar) settle(res, r, true);
         res.body = who + " " + s.verb + " " + times(long(in.size())) + " " + span + ": " + unllm::join_list(said) + ".";
         return res;
     }
@@ -6309,7 +6512,8 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
         auto rows = query(db_, "SELECT CAST(t AS INTEGER), 0, 0, title, detail FROM log WHERE category = 'admin' AND t >= ? AND t < ? ORDER BY t", {from, to});
         res.branch = "records:admin";
         if (rows.empty()) {
-            res.body = std::string(polar ? "No: nothing" : "Nothing") + " was run as administrator " + span + ".";
+            if (polar) settle(res, r, false);
+            res.body = "Nothing was run as administrator " + span + ".";
             return res;
         }
         std::vector<std::string> said;
@@ -6347,7 +6551,7 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
         std::string list;
         for (std::size_t i = skip; i < said.size(); ++i) list += (list.empty() ? "" : "; ") + said[i];
         const long n = long(rows.size());
-        if (polar) res.lead = "Yes.";
+        if (polar) settle(res, r, true);
         res.body = capital(unllm::number_word(n)) + (n == 1 ? " command was" : " commands were") +
                    " run as administrator " + span + (refused ? " (" + unllm::number_word(refused) + " refused)" : "") + ": " +
                    (skip ? std::to_string(skip) + " earlier, then " : "") + list + ".";
@@ -6364,7 +6568,8 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
         const std::string rule = "The recorder notes a first run only for programs outside /usr, /opt and /snap (downloads, builds, scripts), "
                                  "not for installed packages.";
         if (rows.empty()) {
-            res.body = std::string(polar ? "No: no" : "No") + " program ran for the first time " + span + ".";
+            if (polar) settle(res, r, false);
+            res.body = "No program ran for the first time " + span + ".";
             res.notes.push_back(rule);
             return res;
         }
@@ -6417,7 +6622,7 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
         }
         if (order.size() > 8) said.push_back(std::to_string(order.size() - 8) + " more");
         const long n = long(rows.size());
-        if (polar) res.lead = "Yes.";
+        if (polar) settle(res, r, true);
         res.body = capital(unllm::number_word(n)) + (n == 1 ? " program" : " programs") + " ran for the first time " + span +
                    ": " + unllm::join_list(said) + ". " + rule + " Ask about one by name and I'll check where it came from.";
         for (std::size_t i = rows.size() > 6 ? rows.size() - 6 : 0; i < rows.size(); ++i) res.receipts.push_back(when_text(rows[i].t) + "  " + rows[i].s1);
@@ -6440,9 +6645,10 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
             if (res.receipts.size() < 6) res.receipts.push_back(when_text(x.t) + "  " + x.s1 + " to " + x.s2);
         }
         if (fresh.empty()) {
-            res.body = std::string(polar ? "No: no" : "No") + " program connected out for the first time " + span + ".";
+            if (polar) settle(res, r, false);
+            res.body = "No program connected out for the first time " + span + ".";
         } else {
-            if (polar) res.lead = "Yes.";
+            if (polar) settle(res, r, true);
             res.body = (fresh.size() == 1 ? "One program" : capital(unllm::number_word(long(fresh.size()))) + " programs") +
                        " connected out for the first time on record " + span + ": " + unllm::join_list(fresh) + ".";
         }
@@ -6598,11 +6804,12 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
         } else if (!r.window.stated) {
             res.body = std::to_string(b.size()) + (b.size() == 1 ? " boot" : " boots") + " since " + at(b.front()) + ", as far back as the records go.";
         } else if (!in.empty()) {
-            res.body = kind == "startup.when.reboot" ? std::string(polar ? "Yes: it" : "It") + " started " + span + ", at " + unllm::join_list(in) + "."
-                                                     : std::string(polar ? "Yes: " : "") + std::to_string(in.size()) + (in.size() == 1 ? " boot " : " boots ") +
-                                                           span + ": " + unllm::join_list(in) + ".";
+            if (polar) settle(res, r, true);
+            res.body = kind == "startup.when.reboot" ? "It started " + span + ", at " + unllm::join_list(in) + "."
+                                                     : std::to_string(in.size()) + (in.size() == 1 ? " boot " : " boots ") + span + ": " + unllm::join_list(in) + ".";
         } else {
-            res.body = std::string(polar ? "No: it" : "It") + " didn't boot " + span + (up ? "; it had been up since the boot at " + at(up) : "") + ".";
+            if (polar) settle(res, r, false);
+            res.body = "It didn't boot " + span + (up ? "; it had been up since the boot at " + at(up) : "") + ".";
             const std::string story = session_story(db_, from, to, now);
             if (!story.empty()) res.body += " In that window the records show: " + story + ".";
         }
@@ -6688,6 +6895,85 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
                 res.body += " " + std::to_string(starts.size()) + " services started during it; the last to come up were " + unllm::join_list(tail) + ".";
         }
         res.branch = "records:boottime";
+        return res;
+    }
+    if (kind == "programs.list.now") {
+        // The apps the desktop launched and still running: systemd runs each in a unit named "app-<id>..." (firefox in
+        // app-firefox@..., haruna in app-org.kde.haruna@1.service), so the unit says which processes are apps and which.
+        if (!sampler_) sampler_ = std::make_unique<Sampler>();
+        const SnapshotPtr s = sampler_->sample();
+        std::map<std::string, int> apps;
+        std::map<std::string, bool> named;  // the apps the question's program is
+        for (const auto& p : s->procs) {
+            if (p.self || p.unit.rfind("app-", 0) != 0) continue;
+            std::string id = p.unit.substr(4);
+            if (const auto at = id.find('@'); at != std::string::npos) id = id.substr(0, at);
+            else if (const auto dot = id.rfind('.'); dot != std::string::npos) id = id.substr(0, dot);  // ".scope", ".service"
+            if (const auto dot = id.rfind('.'); dot != std::string::npos) id = id.substr(dot + 1);  // "org.kde.haruna": haruna
+            for (std::size_t x; (x = id.find("\\x2d")) != std::string::npos;) id.replace(x, 4, "-");  // systemd's "-"
+            ++apps[id];
+            if (!program.empty() && is_program(program, p.name, p.exe, p.cmdline)) named[id] = true;
+        }
+        std::vector<std::pair<std::string, int>> list(apps.begin(), apps.end());
+        std::sort(list.begin(), list.end(), [](const auto& a, const auto& b) { return a.second != b.second ? a.second > b.second : a.first < b.first; });
+        if (list.empty()) {
+            res.body = "No desktop apps are open right now: nothing is running in a unit the desktop launched.";
+        } else {
+            std::vector<std::string> said;
+            for (const auto& [id, n] : list) said.push_back(id + (n > 1 ? " (" + std::to_string(n) + " processes)" : ""));
+            res.body = capital(unllm::number_word(long(list.size()))) + (list.size() == 1 ? " app is" : " apps are") + " open right now: " +
+                       unllm::join_list(said) + ".";
+            for (const auto& [id, n] : list)
+                if (res.receipts.size() < 8) res.receipts.push_back(id + "  " + std::to_string(n) + (n == 1 ? " process" : " processes"));
+        }
+        // "is kwrite open": the yes or no first, for the app the question names.
+        if (polar && !program.empty()) {
+            res.lead = named.empty() ? "No." : "Yes.";
+            res.body = (named.empty() ? program + " isn't open. " : program + " is open. ") + res.body;
+        }
+        res.notes.push_back("Apps are what the desktop launched; programs started from a terminal or by a service aren't counted here.");
+        res.branch = "records:apps-open";
+        return res;
+    }
+    if (kind == "programs.installed.now") {
+        // The desktop's own list of installed apps: its .desktop entries, system-wide and yours, hidden ones skipped.
+        namespace fs = std::filesystem;
+        const char* h = getenv("HOME");
+        std::vector<std::pair<std::string, int64_t>> apps;  // the name and when its entry was written
+        std::set<std::string> seen;
+        for (const std::string dir : {std::string("/usr/share/applications"), (h ? std::string(h) : std::string()) + "/.local/share/applications"}) {
+            std::error_code ec;
+            for (const auto& e : fs::directory_iterator(dir, ec)) {
+                if (e.path().extension() != ".desktop") continue;
+                std::ifstream in(e.path());
+                std::string line, name;
+                bool hidden = false, app = false, entry = false;
+                while (std::getline(in, line)) {
+                    if (!line.empty() && line[0] == '[') {
+                        if (entry) break;
+                        entry = line == "[Desktop Entry]";
+                        continue;
+                    }
+                    if (!entry) continue;
+                    if (line.rfind("Name=", 0) == 0 && name.empty()) name = line.substr(5);
+                    else if (line == "NoDisplay=true" || line == "Hidden=true") hidden = true;
+                    else if (line.rfind("Type=", 0) == 0) app = line == "Type=Application";
+                }
+                if (name.empty() || hidden || !app || !seen.insert(name).second) continue;
+                struct stat st {};
+                apps.emplace_back(name, stat(e.path().c_str(), &st) == 0 ? int64_t(st.st_mtime) : 0);
+            }
+        }
+        std::sort(apps.begin(), apps.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+        if (apps.empty()) {
+            res.body = "I can't find the desktop's list of installed apps: no .desktop entries to read.";
+        } else {
+            std::vector<std::string> newest;
+            for (std::size_t i = 0; i < apps.size() && i < 8; ++i) newest.push_back(apps[i].first + " (" + when_text(apps[i].second) + ")");
+            res.body = std::to_string(apps.size()) + " apps are installed, by the desktop's own entries. The newest: " + unllm::join_list(newest) + ".";
+            res.notes.push_back("Command-line programs and libraries aren't counted; ask about one by name and I'll check it.");
+        }
+        res.branch = "records:apps-installed";
         return res;
     }
     if (kind == "startup.list.now") {
@@ -7134,7 +7420,9 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
         std::sort(stops.begin(), stops.end());
         const std::string where = r.window.stated ? span : "in the records";
         if (stops.empty()) {
-            res.body = "No, the machine didn't stop without a clean shutdown " + where + "." +
+            if (polar) settle(res, r, false);
+            else res.lead = "No.";
+            res.body = "The machine didn't stop without a clean shutdown " + where + "." +
                        (b.empty() ? "" : " It has been up since " + when_text(b.back().first) + ".");
             // A dark screen without a crash is usually the session: sleep, the lid, the lock screen.
             if (r.window.stated) {
@@ -7149,7 +7437,8 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
         std::vector<std::string> times;
         for (const auto& x : stops) times.push_back(when_text(x.first));
         // A yes/no question is answered with a yes; "how many times" with the count and "why" with the stops, no yes.
-        res.body = std::string(polar ? "Yes, the machine" : "The machine") + " stopped without a clean shutdown " +
+        if (polar) settle(res, r, true);
+        res.body = "The machine stopped without a clean shutdown " +
                    (stops.size() == 1 ? std::string("once") : std::to_string(stops.size()) + " times") +
                    " " + where + ": " + unllm::join_list(times) + ".";
         // The latest one's explanation, from its event: the text after the "HH:MM:SS to HH:MM:SS (1 s). " lead. Its
@@ -7386,9 +7675,9 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
         };
         const std::string between = "between the snapshots of " + moment_text(base->t) + " and " + moment_text(last->t);
         // A yes-or-no question ("did any config files change") gets its yes in front.
-        const std::string yes = polar ? "Yes, " : "";
         if (!names.empty()) {
-            res.body = hit.empty() ? "No " + names[0] + " file changed " + between + "." : yes + first(hit, 6) + " changed " + between + ".";
+            if (polar && !hit.empty()) settle(res, r, true);
+            res.body = hit.empty() ? "No " + names[0] + " file changed " + between + "." : first(hit, 6) + " changed " + between + ".";
             if (hit.empty() && !count.empty()) res.body += " " + std::to_string(count.size()) + " other config files did.";
         } else if (count.empty()) {
             res.body = "No config file changed " + between + ".";
@@ -7414,7 +7703,8 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
                 for (const auto& x : items) out.push_back(x.second);
                 return out;
             };
-            res.body = yes + std::to_string(count.size()) + " config files changed " + between + ":";
+            if (polar) settle(res, r, true);
+            res.body = std::to_string(count.size()) + " config files changed " + between + ":";
             if (!sys.empty()) res.body += " " + std::to_string(sys.size()) + " in /etc (" + first(listed(true), 5) + ")";
             if (!mine.empty()) res.body += std::string(sys.empty() ? " " : " and ") + std::to_string(mine.size()) + " of yours (" + first(listed(false), 8) + ")";
             res.body += ".";
@@ -7973,32 +8263,75 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
     }
 
     if (kind == "disk.space.which.now") {
-        // The home folder walked for at most 20 s; what was found by then is ranked.
+        // The home folder walked for at most 20 s; what was found by then is ranked. The scan is kept for ten minutes
+        // (scan_cache_), so two questions a minute apart get the same figures.
+        struct Scan {
+            double total = 0;
+            bool cut = false;
+            std::vector<std::pair<std::string, double>> kids, largest;
+        } scan;
+        bool have = false;
         const char* h = getenv("HOME");
         const std::string home = h ? h : "/";
-        std::atomic<bool> cancel{false};
-        std::atomic<long long> files{0}, bytes{0};
-        std::thread timer([&cancel] {
-            for (int i = 0; i < 200 && !cancel; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            cancel = true;
-        });
-        auto tree = scan_dir(home, cancel, files, bytes);
-        const bool cut = cancel.load();
-        cancel = true;
-        timer.join();
-        if (!tree || tree->kids.empty()) {
-            res.body = space_line(*root) + ". I couldn't read your home folder to say what takes the space.";
-            res.branch = "space:which-none";
-            return res;
+        auto tabs = [](const std::string& line) {
+            std::vector<std::string> out;
+            std::size_t at = 0;
+            for (std::size_t tab; (tab = line.find('\t', at)) != std::string::npos; at = tab + 1) out.push_back(line.substr(at, tab - at));
+            out.push_back(line.substr(at));
+            return out;
+        };
+        auto shorten_home = [&](const std::string& path) { return path.rfind(home + "/", 0) == 0 ? "~" + path.substr(home.size()) : path; };
+        if (std::ifstream in(scan_cache_); in) {
+            std::string line;
+            int64_t at = 0;
+            while (std::getline(in, line)) {
+                const auto f = tabs(line);
+                if (f.size() == 2 && f[0] == "at") at = std::atoll(f[1].c_str());
+                else if (f.size() == 3 && f[0] == "total") scan.total = std::atof(f[1].c_str()), scan.cut = f[2] == "cut";
+                else if (f.size() == 3 && f[0] == "kid") scan.kids.emplace_back(f[1], std::atof(f[2].c_str()));
+                else if (f.size() == 3 && f[0] == "file") scan.largest.emplace_back(f[1], std::atof(f[2].c_str()));
+            }
+            have = at > 0 && now - at < 600 && !scan.kids.empty();
         }
-        std::vector<const DirNode*> kids;
-        for (const auto& k : tree->kids) kids.push_back(k.get());
-        std::sort(kids.begin(), kids.end(), [](const DirNode* x, const DirNode* y) { return x->bytes > y->bytes; });
+        if (!have) {
+            scan = Scan{};
+            std::atomic<bool> cancel{false};
+            std::atomic<long long> files{0}, bytes{0};
+            std::thread timer([&cancel] {
+                for (int i = 0; i < 200 && !cancel; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                cancel = true;
+            });
+            auto tree = scan_dir(home, cancel, files, bytes);
+            scan.cut = cancel.load();
+            cancel = true;
+            timer.join();
+            if (!tree || tree->kids.empty()) {
+                res.body = space_line(*root) + ". I couldn't read your home folder to say what takes the space.";
+                res.branch = "space:which-none";
+                return res;
+            }
+            scan.total = tree->bytes;
+            for (const auto& k : tree->kids) scan.kids.emplace_back(k->name, k->bytes);
+            std::sort(scan.kids.begin(), scan.kids.end(), [](const auto& x, const auto& y) { return x.second > y.second; });
+            scan.largest = tree->largest;
+            if (std::ofstream out(scan_cache_); out) {
+                out << "at\t" << now << "\ntotal\t" << fmt("%.0f", scan.total) << "\t" << (scan.cut ? "cut" : "whole") << "\n";
+                for (std::size_t i = 0; i < scan.kids.size() && i < 5; ++i) out << "kid\t" << scan.kids[i].first << "\t" << fmt("%.0f", scan.kids[i].second) << "\n";
+                for (const auto& [path, b] : scan.largest) out << "file\t" << path << "\t" << fmt("%.0f", b) << "\n";
+            }
+        }
         std::string top;
-        for (std::size_t i = 0; i < kids.size() && i < 5; ++i)
-            top += std::string(i ? (i + 1 == std::min<std::size_t>(5, kids.size()) ? " and " : ", ") : "") + kids[i]->name + " " + human_bytes(kids[i]->bytes);
-        res.body = "In your home folder (" + human_bytes(tree->bytes) + (cut ? " counted in 20 s, so at least that" : "") + "), the biggest are " +
+        for (std::size_t i = 0; i < scan.kids.size() && i < 5; ++i)
+            top += std::string(i ? (i + 1 == std::min<std::size_t>(5, scan.kids.size()) ? " and " : ", ") : "") + scan.kids[i].first + " " + human_bytes(scan.kids[i].second);
+        const bool cut = scan.cut;
+        res.body = "In your home folder (" + human_bytes(scan.total) + (cut ? " counted in 20 s, so at least that" : "") + "), the biggest are " +
                    top + ". " + space_line(*root) + ".";
+        // "What file is taking the space": the biggest single files the walk passed.
+        if (!scan.largest.empty()) {
+            std::vector<std::string> big;
+            for (const auto& [path, b] : scan.largest) big.push_back(shorten_home(path) + " (" + human_bytes(b) + ")");
+            res.body += " The biggest single files: " + unllm::join_list(big) + ".";
+        }
         // "What filled up my drive this week": the folders' sizes are a scan made now; over a past window only the free
         // space is kept, so that is said first, with how it moved.
         if (r.window.stated && !r.window.live && !r.window.present) {
@@ -8011,9 +8344,9 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
         for (const auto& f : fs)
             if (home.rfind(f.mount, 0) == 0 && f.mount.size() > holder->mount.size()) holder = &f;
         const double used = holder->total - holder->free;
-        if (used > tree->bytes)
-            res.body += " Home is " + std::string(cut ? "at least " : "") + fmt("%.0f", 100.0 * tree->bytes / used) + "% of what " + holder->mount +
-                        " holds; the rest takes " + (cut ? "at most " : "about ") + human_bytes(used - tree->bytes) + ".";
+        if (used > scan.total)
+            res.body += " Home is " + std::string(cut ? "at least " : "") + fmt("%.0f", 100.0 * scan.total / used) + "% of what " + holder->mount +
+                        " holds; the rest takes " + (cut ? "at most " : "about ") + human_bytes(used - scan.total) + ".";
         res.branch = "space:which";
         return res;
     }

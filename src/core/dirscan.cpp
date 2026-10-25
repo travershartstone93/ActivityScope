@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "dirscan.h"
 
 #include <dirent.h>
@@ -11,8 +12,17 @@ namespace as {
 
 namespace {
 
-void walk(int dirfd, DirNode& node, dev_t dev, const std::atomic<bool>& cancel, std::atomic<long long>& files,
-          std::atomic<long long>& total) {
+// The biggest single files seen so far (at most three), kept on the root as the walk goes.
+void note_largest(DirNode& root, const std::string& path, double bytes) {
+    auto& big = root.largest;
+    if (big.size() == 3 && bytes <= big.back().second) return;
+    big.emplace_back(path, bytes);
+    std::sort(big.begin(), big.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+    if (big.size() > 3) big.pop_back();
+}
+
+void walk(int dirfd, DirNode& node, DirNode& root, const std::string& path, dev_t dev, const std::atomic<bool>& cancel,
+          std::atomic<long long>& files, std::atomic<long long>& total) {
     DIR* d = fdopendir(dirfd);
     if (!d) {
         ::close(dirfd);
@@ -29,7 +39,7 @@ void walk(int dirfd, DirNode& node, dev_t dev, const std::atomic<bool>& cancel, 
             if (sub < 0) continue;
             auto kid = std::make_unique<DirNode>();
             kid->name = e->d_name;
-            walk(sub, *kid, dev, cancel, files, total);
+            walk(sub, *kid, root, path + "/" + e->d_name, dev, cancel, files, total);
             node.bytes += kid->bytes;
             node.files += kid->files;
             node.kids.push_back(std::move(kid));
@@ -39,6 +49,7 @@ void walk(int dirfd, DirNode& node, dev_t dev, const std::atomic<bool>& cancel, 
             ++node.files;
             ++files;
             total += static_cast<long long>(b);
+            if (S_ISREG(st.st_mode)) note_largest(root, path + "/" + e->d_name, b);
         }
     }
     closedir(d);
@@ -57,7 +68,7 @@ std::unique_ptr<DirNode> scan_dir(const std::string& root, const std::atomic<boo
         ::close(fd);
         return node;
     }
-    walk(fd, *node, st.st_dev, cancel, files, bytes);
+    walk(fd, *node, *node, root, st.st_dev, cancel, files, bytes);
     return node;
 }
 

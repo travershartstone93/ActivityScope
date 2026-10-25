@@ -1,0 +1,33 @@
+# Plain names for the catalogue's topics and answer forms, used where ask says how it took a question.
+topic	slow	CPU load and slowness
+topic	startup	startup and boot
+topic	network	the network
+topic	battery	the battery and sleep
+topic	memory	memory
+topic	identity	the hardware
+topic	disk	disks and free space
+topic	heat	heat and the fans
+topic	gpu	the GPU
+topic	diagnose	what is wrong
+topic	devices	plugged-in devices
+topic	sharing	what is sent out
+topic	crashes	crashes and failures
+topic	trust	whether a program can be trusted
+topic	updates	software updates
+topic	story	what happened
+topic	flash	firmware flashing
+topic	config	settings files
+form	a value	how much
+form	a current value	how much
+form	a value over a window	how much
+form	a list	a list
+form	which thing	which one
+form	a cause	why
+form	when	when
+form	a time	when
+form	how often or how long	how often or how long
+form	a comparison or trend	a comparison
+form	yes or no	yes or no
+form	identity	what it is
+topic	programs	the apps and programs
+topic	sound	sound

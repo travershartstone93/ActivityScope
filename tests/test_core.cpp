@@ -1504,7 +1504,7 @@ void test_askcore() {
 
     // A polar question about a program gets its yes with the evidence.
     as::AskResult ran = ask.ask("did blender run today", int64_t(now));
-    CHECK(ran.answer.find("Yes, Blender ran once") != std::string::npos);
+    CHECK(ran.answer.find("Yes. Blender ran once") != std::string::npos);
     as::AskResult norun = ask.ask("did ollama run today", int64_t(now));
     CHECK(norun.refused || norun.answer.find("No") == 0);  // unknown program: refused or a clean no
 
@@ -1607,7 +1607,7 @@ void test_askcore() {
         as::Ask ask2;
         CHECK(ask2.open(dbp2));
         as::AskResult once = ask2.ask("did blender run today", int64_t(now));
-        CHECK(once.answer.find("Yes, Blender ran once") != std::string::npos);
+        CHECK(once.answer.find("Yes. Blender ran once") != std::string::npos);
     }
     {
         std::string dbp3 = dir + "/slept.db";
@@ -1635,8 +1635,8 @@ void test_askcore() {
               und.body.find("The CPU reached 90 C during one event.") == 0 && und.answer == und.lead + " " + und.body);
         // One the records settle keeps its own yes, and the moment is said before it as how the question was taken.
         as::AskResult yes = ask3.ask("was there trouble with the heat at 7:30 tonight", int64_t(now));
-        CHECK(yes.lead.empty() && yes.scope.size() == 1 && yes.scope[0] == "At Tue 19:30 it was asleep, from Tue 19:25 to Tue 19:50. Around then:" &&
-              yes.answer == as::compose_answer(yes) && yes.answer.find("Around then: Yes, the CPU reached 90 C") != std::string::npos);
+        CHECK(yes.lead == "Yes." && yes.scope.size() == 1 && yes.scope[0] == "At Tue 19:30 it was asleep, from Tue 19:25 to Tue 19:50. Around then:" &&
+              yes.answer == as::compose_answer(yes) && yes.answer.find("Around then: Yes. The CPU reached 90 C") != std::string::npos);
     }
 
     // The full identity answer and a live question, against the real machine:
@@ -1684,7 +1684,7 @@ void test_askcore() {
         // Corrections swap one thing into the last question.
         at("did blender run today");
         as::AskResult fix = at("no i meant firefox");
-        CHECK(fix.answer.find("No, Firefox did not run in that window.") == 0);
+        CHECK(fix.answer.find("No. Firefox did not run in that window.") == 0);
         // Chat-speak and a typo, with the correction shown.
         as::AskResult typo = at("wat crashd 2day");
         CHECK(typo.answer.find("One crash was recorded") != std::string::npos);
@@ -1716,7 +1716,7 @@ void test_askcore() {
         CHECK(at("is blender or firefox worse for heat").answer.find("Blender weighed more for heat") == 0);
         CHECK(at("how hot does it get when blender is running").answer.find("while blender was running") !=
               std::string::npos);
-        CHECK(at("should i be worried about the temperature").answer.find("No: nothing in the records") == 0);
+        CHECK(at("should i be worried about the temperature").answer.find("No. Nothing in the records") == 0);
         CHECK(at("what should i do about the heat").answer.find("blender did most of that work") != std::string::npos);
         CHECK(!at("how is the gpu doing").refused);
         // The live set keeps its branches.
@@ -1886,6 +1886,75 @@ void test_kinds() {
     // Their neighbours keep their own kinds.
     CHECK(lands("what went on with my laptop while i was out", {"diagnose.list.window"}));
     CHECK(lands("did the computer reboot itself at 4pm", {"startup.often.reboot", "startup.when.reboot", "crashes.yesno.window.system"}));
+    // Each topic's score is the mean of its three nearest phrasings, every topic ranked: a question about spending is far
+    // from memory as a whole (pool row 68, 0.76), one about the memory programs used is near it.
+    const as::KindMatch spend = kinds.match("how much did i spend on the amazon app last month");
+    const as::KindMatch used = kinds.match("which program used the most memory this week");
+    CHECK(spend.topic_score("memory") > 0.5f && spend.topic_score("memory") < 0.80f);
+    CHECK(used.topic_score("memory") > 0.85f && used.topics.front().first == "memory");
+    CHECK(used.topics.size() > 10 && std::is_sorted(used.topics.begin(), used.topics.end(),
+                                                    [](const auto& a, const auto& b) { return a.second > b.second; }));
+    CHECK(used.topic_score("no such topic") == 0);
+}
+
+// The read-back gate, on questions of the diagnostic pool (195 new questions, 2026-10-24): the answer to a question far
+// from its topic as a whole, which the analyzer's own reading puts in another topic or none, says first how the question
+// was taken, and the answer stays. Records are not needed: the scores are the matcher's and the analyzer's.
+void test_read_back() {
+    std::puts("read-back gate");
+    namespace fs = std::filesystem;
+    const char* home = std::getenv("HOME");
+    const char* em = std::getenv("ASK_EMBED_MODEL");
+    const std::string model_dir = em ? em : std::string(home ? home : "") + "/.local/share/unllm/models/bge-small-en-v1.5";
+    if (access((model_dir + "/model.onnx").c_str(), R_OK) != 0) {
+        std::puts("  no embedding model: read-back checks skipped");
+        return;
+    }
+    const std::string dir = fs::temp_directory_path() / ("as-readback-" + std::to_string(getpid()));
+    fs::create_directories(dir);
+    const std::string dbp = dir + "/h.db";
+    { as::Store st(dbp); }  // the schema, no records
+    char exe[4096];
+    const ssize_t len = readlink("/proc/self/exe", exe, sizeof exe - 1);
+    const std::string binary = len > 0 ? std::string(exe, std::size_t(len)) : std::string("./ascore_tests");
+    const std::string cache = binary.substr(0, binary.rfind('/')) + "/kinds-cache";
+    fs::create_directories(cache);
+    auto at = [](int h, int m) {
+        std::tm tm{};
+        tm.tm_year = 2026 - 1900; tm.tm_mon = 9; tm.tm_mday = 23; tm.tm_hour = h; tm.tm_min = m; tm.tm_isdst = -1;
+        return int64_t(std::mktime(&tm));
+    };
+    auto ask = [&](const char* q, int64_t now, const std::string& kind = "") {
+        as::Ask a;
+        CHECK(a.open(dbp));
+        a.load_language("vendor/unllm/data/synonyms.txt", "vendor/unllm/data/vectors.bin", "vendor/unllm/data/banter.txt",
+                        "vendor/unllm/data/rewrites.txt");
+        a.load_conversation("vendor/unllm/data/followups.txt", "vendor/unllm/data/chatspeak.txt");
+        CHECK(a.load_kinds("data/kinds", cache, model_dir));
+        a.force_reading(kind);
+        return a.ask(q, now);
+    };
+    const std::string said = "I took this as a question about ";
+    const std::string invite = "; if you meant something else, ask with more detail.";
+    // Row 68: spending, matched to the swap's use over a window. The read-back names the kind from the catalogue (its
+    // topic, its answer's form, its time) and comes first; the answer follows as it was.
+    const as::AskResult spend = ask("how much did i spend on the amazon app last month", at(13, 59));
+    CHECK(spend.read_back && spend.answer.rfind(said + "memory (how much, in the past)" + invite + " ", 0) == 0);
+    CHECK(!spend.body.empty() && spend.answer.size() > spend.body.size() &&
+          spend.answer.compare(spend.answer.size() - spend.body.size(), spend.body.size(), spend.body) == 0);
+    // Near its topic: none. Far from it (row 175, 0.80) but read by the analyzer as memory itself: none either.
+    const as::AskResult used = ask("which program used the most memory this week", at(13, 59));
+    CHECK(!used.read_back && used.answer.find(said) == std::string::npos);
+    CHECK(!ask("swap usage during the video render yesterday", at(13, 59)).read_back);
+    // A forced kind, and the honest reply (row 102: the monitor is not recorded), are never read back.
+    CHECK(!ask("how much did i spend on the amazon app last month", at(13, 59), "memory.swap.value.window").read_back);
+    const as::AskResult monitor = ask("did the external monitor disconnect while i was away from the desk, dock keeps dropping it", at(13, 59));
+    CHECK(monitor.refused && !monitor.read_back && monitor.answer.find(said) == std::string::npos);
+    // Its place: before the other sentences on how the question was taken (row 98's "this morning" asked at 02:38).
+    const as::AskResult early = ask("did my sister text me this morning on her phone", at(2, 38));
+    CHECK(early.read_back && early.scope.size() >= 2 && early.scope[0].rfind(said, 0) == 0);
+    CHECK(early.answer.find("It is only 02:38") != std::string::npos && early.answer.find(invite + " It is only 02:38") != std::string::npos);
+    fs::remove_all(dir);
 }
 
 // Everyday words to programs (names.h), against rows copied from this laptop's records on 2026-10-23, the unit
@@ -2932,8 +3001,10 @@ void test_event_answers() {
     {
         const std::string no = said("was firefox open when the fan hit its peak yesterday");
         CHECK(no.rfind("No", 0) == 0 && has(no, "85%") && has(no, "09:21") && has(no, "10:08"));
+        // A right answer the read-back gate touches (the analyzer names no topic, heat as a whole is at 0.82): the
+        // read-back first, then the answer as before.
         const std::string yes = said("was claude open when the fan hit its peak yesterday");
-        CHECK(yes.rfind("Yes", 0) == 0);
+        CHECK(yes.rfind("I took this as a question about heat and the fans (", 0) == 0 && has(yes, "ask with more detail. Yes. The fan peaked"));
     }
     // 6, Q19: memory ranked by memory in the hour asked (right since the time fix: a guard).
     CHECK(has(said("what was the biggest memory hog between 7 and 8 yesterday morning"), "lama-server used the most memory"));
@@ -3858,8 +3929,10 @@ void test_window_answers() {
     }
     // Q20: whether a program ran and for how long: its runs with their times, not the helper named like it.
     {
+        // Right answers the read-back gate touches (no topic named, slow as a whole at 0.80): the read-back, then the
+        // answer as before.
         const std::string a = asked("was blender running on wednesday, and for how long");
-        CHECK(a.rfind("Yes", 0) == 0 && has(a, "17:42") && has(a, "19:25") && has(a, "one hour and 17 minutes") && !has(a, "mcp"));
+        CHECK(a.rfind("I took this as a question about CPU load and slowness (", 0) == 0 && has(a, "ask with more detail. Yes. Blender ran") && has(a, "17:42") && has(a, "19:25") && has(a, "one hour and 17 minutes") && !has(a, "mcp"));
         const std::string b = asked("how long was blender running on wednesday");
         CHECK(has(b, "17:42") && has(b, "one hour and 17 minutes"));
     }
@@ -4796,6 +4869,131 @@ void test_live_t95() {
     fs::remove_all(dir);
 }
 
+// A yes or no leads with the test the question asks, not the one its handler always runs: the battery's night (D49,
+// D101, D111 of the diagnostic pool) and the heat events under the hot level (D145), on rows shaped like the n50 night:
+// off the charger at 23:29 at 100%, back on at 23:46 at 88%, full again at 00:31; three heat events at 80 to 84 C.
+void test_asked_leads() {
+    std::puts("leads that answer the question asked");
+    namespace fs = std::filesystem;
+    const std::string home = std::getenv("HOME") ? std::getenv("HOME") : "";
+    const char* em = std::getenv("ASK_EMBED_MODEL");
+    const std::string model = em ? em : home + "/.local/share/unllm/models/bge-small-en-v1.5";
+    if (access((model + "/model.onnx").c_str(), R_OK) != 0) {
+        std::puts("  no embedding model: skipped");
+        return;
+    }
+    const std::string dir = fs::temp_directory_path() / ("as-leads-" + std::to_string(getpid()));
+    fs::create_directories(dir);
+    auto at = [](int mday, int h, int m, int s) {
+        std::tm tmv{};
+        tmv.tm_year = 2026 - 1900; tmv.tm_mon = 9; tmv.tm_mday = mday; tmv.tm_hour = h; tmv.tm_min = m; tmv.tm_sec = s; tmv.tm_isdst = -1;
+        return int64_t(std::mktime(&tmv));
+    };
+    const int64_t now = at(23, 13, 59, 8);
+    const int64_t off = at(22, 23, 29, 59), on = at(22, 23, 46, 21), full = at(23, 0, 31, 23);
+    const std::string dbp = dir + "/h.db";
+    { as::Store st(dbp); }
+    {
+        sqlite3* db = nullptr;
+        sqlite3_open(dbp.c_str(), &db);
+        auto exec = [&](const std::string& sql) {
+            char* err = nullptr;
+            const bool ok = sqlite3_exec(db, sql.c_str(), nullptr, nullptr, &err) == SQLITE_OK;
+            if (err) std::fprintf(stderr, "  %s\n", err), sqlite3_free(err);
+            return ok;
+        };
+        auto i = [](int64_t v) { return std::to_string(v); };
+        CHECK(exec("BEGIN"));
+        exec("INSERT INTO log(t, category, title, detail) VALUES (" + i(off) + ", 'session', 'Unplugged from power at 100% battery', ''), (" + i(on) +
+             ", 'session', 'Plugged into power at 88% battery', '')");
+        // Heat events that opened on the fan and a quick rise, none at the 85 C the recorder counts as hot; one this
+        // morning at 97 C.
+        exec("INSERT INTO events(id, start, \"end\", kinds, primary_kind, summary, peak_cpu, peak_temp, peak_fan, min_margin, guard_limit) VALUES "
+             "(1, " + i(at(22, 23, 32, 0)) + ", " + i(at(22, 23, 35, 0)) + ", 17, 16, 'CPU temperature rose 26 C in 30 s', 70, 83, 80, 17, 100),"
+             "(2, " + i(at(23, 0, 1, 0)) + ", " + i(at(23, 0, 4, 0)) + ", 17, 16, 'CPU temperature rose 27 C in 30 s', 75, 84, 80, 16, 100),"
+             "(3, " + i(at(23, 2, 41, 0)) + ", " + i(at(23, 2, 42, 0)) + ", 16, 16, 'CPU temperature rose 25 C in 30 s', 40, 80, 70, 20, 100),"
+             "(4, " + i(at(23, 7, 58, 0)) + ", " + i(at(23, 7, 59, 0)) + ", 17, 16, 'CPU at 97 C', 90, 97, 100, 3, 100)");
+        exec("INSERT INTO event_culprits(event_id, rank, kind, name, cmdline, unit, cpu_seconds, share) VALUES "
+             "(1, 0, 'process', 'cc1plus', 'cc1plus -quiet x.cpp', 'vte-spawn-1.scope', 150, 0.8), (2, 0, 'process', 'python3', 'python3 -I run_tests.py', "
+             "'vte-spawn-1.scope', 120, 0.7), (3, 0, 'process', 'python', 'python -m scan scan', 'run-scan.scope', 20, 0.5), "
+             "(4, 0, 'process', 'sim', 'sim --run', 'app.scope', 50, 0.9)");
+        sqlite3_stmt* st = nullptr;
+        sqlite3_prepare_v2(db, "INSERT INTO samples(t, cpu, temp, fan, battery_pct, on_ac) VALUES (?, ?, ?, ?, ?, ?)", -1, &st, nullptr);
+        for (int64_t t = at(22, 13, 32, 20); t < now - 30; t += 10) {
+            const double pct = t < off ? 100 : t < on ? 100 - 12.0 * double(t - off) / double(on - off)
+                                                      : std::min(100.0, std::floor(88 + 12.0 * double(t - on) / double(full - on)));
+            const double v[] = {double(t), 5, 50, 45, pct, t >= off && t < on ? 0.0 : 1.0};
+            for (int k = 0; k < 6; ++k) sqlite3_bind_double(st, k + 1, v[k]);
+            sqlite3_step(st);
+            sqlite3_reset(st);
+        }
+        sqlite3_finalize(st);
+        CHECK(exec("COMMIT"));
+        sqlite3_close(db);
+    }
+    // The live machine: on battery at 73%, the CPU at 57 C.
+    Tree t;
+    t.write("proc/stat", "cpu 100 0 100 800 0 0 0 0\nbtime 1000\n");
+    t.write("proc/meminfo", "MemTotal: 16000000 kB\nMemAvailable: 8000000 kB\nSwapTotal: 0 kB\nSwapFree: 0 kB\n");
+    t.write("sys/class/hwmon/hwmon0/name", "coretemp\n");
+    t.write("sys/class/hwmon/hwmon0/temp1_label", "Package id 0\n");
+    t.write("sys/class/hwmon/hwmon0/temp1_input", "57000\n");
+    t.write("sys/class/power_supply/AC/type", "Mains\n");
+    t.write("sys/class/power_supply/AC/online", "0\n");
+    for (const auto& [f, v] : std::vector<std::pair<const char*, const char*>>{{"type", "Battery"}, {"status", "Discharging"}, {"capacity", "73"}})
+        t.write(std::string("sys/class/power_supply/BAT0/") + f, std::string(v) + "\n");
+    t.write("etc/UPower/UPower.conf", "[UPower]\nPercentageLow=20.0\n");
+    char exe[4096];
+    const ssize_t len = readlink("/proc/self/exe", exe, sizeof exe - 1);
+    const std::string bin = len > 0 ? std::string(exe, std::size_t(len)) : std::string("./ascore_tests");
+    const std::string cache = bin.substr(0, bin.rfind('/')) + "/kinds-cache";
+    fs::create_directories(cache);
+    auto ask_as = [&](const std::string& kind, const char* q) {
+        as::Ask a;
+        a.open(dbp);
+        a.load_language("vendor/unllm/data/synonyms.txt", "vendor/unllm/data/vectors.bin",
+                        "vendor/unllm/data/banter.txt", "vendor/unllm/data/rewrites.txt");
+        a.load_conversation("vendor/unllm/data/followups.txt", "vendor/unllm/data/chatspeak.txt");
+        a.load_facts({"facts/base.tsv"});
+        a.load_kinds("data/kinds", cache, model);
+        a.set_roots(t.roots());
+        if (!kind.empty()) a.force_reading(kind);
+        as::AskResult r = a.ask(q, now);
+        std::fprintf(stderr, "  [%s] %s -> %s\n", r.branch.c_str(), q, r.answer.c_str());
+        return r;
+    };
+    auto has = [](const as::AskResult& r, const char* text) { return r.answer.find(text) != std::string::npos; };
+
+    // D49: the battery's wear against last month: not the low level; these records can't settle it, and say so.
+    for (const char* q : {"is my battery health dropping faster than it was last month", "is my battery losing capacity faster than last month",
+                          "is the battery wearing out quicker than before"}) {
+        as::AskResult a = ask_as("battery.value.window", q);
+        CHECK(a.lead.empty() && a.undecided && !has(a, "calls low"));
+    }
+    // D101 and D111: whether it charged fully, from the charger's rows and the readings.
+    for (const char* q : {"did the battery charge fully last night", "did my battery charge all the way to 100 overnight",
+                          "was the battery charging fully last night or did it stop at 80", "did the battery stop charging at 80 last night or go to full"}) {
+        as::AskResult a = ask_as("battery.value.window", q);
+        CHECK(a.lead == "Yes." && has(a, "23:46") && has(a, "88%") && has(a, "reached 100% at Fri 00:31") && !has(a, "calls low"));
+    }
+    // Asked whether it got low, the low level still answers.
+    as::AskResult low = ask_as("battery.value.window", "did the battery get low last night");
+    CHECK(low.lead == "No:" && has(low, "never fell below 20%") && has(low, "88% at Thu 23:46"));
+    // D145: heat events under the hot level are no overheating; one over it is.
+    for (const char* q : {"did my laptop overheat last night", "was the cpu overheating last night"}) {
+        as::AskResult a = ask_as("heat.value.window", q);
+        CHECK(a.lead == "No: it stayed under 85 C, the level the recorder counts as hot." && has(a, "84 C"));
+    }
+    as::AskResult hot = ask_as("heat.value.window", "did my laptop overheat this morning");
+    CHECK(hot.lead == "Yes." && hot.body.rfind("The CPU reached 97 C", 0) == 0);
+    // The battery now: the side the question asks about, then the state it is in.
+    as::AskResult plugged = ask_as("", "is my laptop plugged in");
+    CHECK(plugged.branch == "live:battery" && plugged.lead == "No." && plugged.body.rfind("It is on battery, at 73%", 0) == 0);
+    as::AskResult onbat = ask_as("", "am i on battery");
+    CHECK(onbat.branch == "live:battery" && onbat.lead == "Yes." && onbat.body.rfind("It is on battery, at 73%", 0) == 0);
+    fs::remove_all(dir);
+}
+
 // A command's output.
 std::string run_cmd(const std::string& cmd) {
     std::string out;
@@ -5120,12 +5318,14 @@ int main() {
     test_peerwatch();
     test_askcore();
     test_kinds();
+    test_read_back();
     test_names();
     test_records_data();
     test_records_log();
     test_shutdown_event();
     test_records_n50();
     test_live_t95();
+    test_asked_leads();
     test_records_t95();
     test_event_answers();
     test_answer_shapes();

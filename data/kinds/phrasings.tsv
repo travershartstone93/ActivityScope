@@ -5911,3 +5911,43 @@ story.used.window	was the laptop touched overnight
 story.used.window	did someone wake my laptop up while i was away
 story.used.window	who was on the laptop this morning
 story.used.window	did my flatmate go on my pc while i was at the gym
+disk.space.value.now	what percent of the hard drive is used
+disk.space.value.now	what percentage of the drive is in use
+disk.space.value.now	how full is the hard drive
+disk.space.value.now	how much of the drive is used up
+disk.space.value.now	how much of my hard drive is taken
+disk.space.value.now	what percent of the ssd is used
+disk.space.value.now	how full is my disk
+disk.space.value.now	drive usage in percent
+disk.space.value.now	how much of the disk is used
+disk.space.value.now	is the hard drive nearly full
+programs.list.now	what apps are open
+programs.list.now	what apps are currently open
+programs.list.now	which programs are running right now
+programs.list.now	what programs do i have open
+programs.list.now	list the open apps
+programs.list.now	whats open at the moment
+programs.list.now	which apps are running
+programs.list.now	what windows are open right now
+programs.list.now	what have i got open
+programs.list.now	what applications are running now
+programs.installed.now	what apps are installed
+programs.installed.now	which programs are installed on this laptop
+programs.installed.now	list the installed apps
+programs.installed.now	what software do i have installed
+programs.installed.now	what applications are on this machine
+programs.installed.now	what apps have i got
+programs.installed.now	show me the installed programs
+programs.installed.now	whats installed on here
+programs.installed.now	how many apps are installed
+programs.installed.now	what programs are available on this laptop
+sound.value.none	is the volume muted
+sound.value.none	is volume on or off
+sound.value.none	is the sound muted
+sound.value.none	how loud is the volume
+sound.value.none	what is the volume set to
+sound.value.none	is the audio on
+sound.value.none	is sound turned off
+sound.value.none	are the speakers muted
+sound.value.none	whats the volume level
+sound.value.none	is the sound working
