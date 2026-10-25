@@ -4,6 +4,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <regex>
 #include <cstring>
 #include <filesystem>
 #include <sys/stat.h>
@@ -1157,6 +1158,96 @@ AskResult Ask::ask_once(const std::string& question, int64_t now, const std::str
             } else {
                 res.scope.insert(res.scope.begin(), slept + " Around then:");
             }
+        }
+    // The answer form is the part of a question most often read wrong (right 7 in 10 on unseen questions; the topic 8 in
+    // 10), so the forms the matcher nearly picked within the same topic are answered too, after the asked one, in a fixed
+    // order of forms: a question read as "which program" still gets its "when" and its "yes or no", and the answer is
+    // right whichever was meant. Two at most; a form that says nothing, refuses, or repeats the main answer is left out.
+    // Under --trace every candidate gets a receipt saying why it was added or left out.
+    if (!fresh || res.refused || !force_kind.empty() || kind_ != match_.id)
+        res.receipts.push_back(std::string("forms: none tried (") + (!fresh ? "a follow-up" : res.refused ? "refused" : !force_kind.empty() ? "kind forced" : "kind changed from " + match_.id + " to " + kind_) + ")");
+    else if (const QuestionKind* k0 = kinds_.find(kind_); k0 && k0->topic != "none" && k0->topic != "programs" && k0->topic != "identity") {
+            static const std::vector<std::string> order = {"yes or no", "a current value", "a value", "a value over a window", "when", "a time",
+                                                           "which thing", "a list", "a cause", "how often or how long"};
+            auto family = [](const std::string& f) {
+                return f.rfind("a value", 0) == 0 || f == "a current value" ? std::string("value") : f == "a time" ? std::string("when") : f;
+            };
+            const bool about_now = reading.window.live || reading.window.present;
+            std::vector<const QuestionKind*> near;
+            for (std::size_t i = 0; i < match_.runners.size() && i < 5; ++i) {
+                const std::string& id = match_.runners[i].first;
+                const QuestionKind* ks = kinds_.find(id);
+                if (!ks || ks->id == k0->id) continue;
+                std::string why;
+                if (ks->topic != k0->topic) why = "another topic";
+                else if (ks->data == "missing") why = "not recorded";
+                else if (family(ks->form) == family(k0->form)) why = "the asked form";
+                else if (ks->window == (about_now ? "window" : "now")) why = "another time";  // a past question gets no "now" form
+                else if (std::find(order.begin(), order.end(), ks->form) == order.end()) why = "a form not added";
+                else
+                    for (const auto* o : near)
+                        if (family(o->form) == family(ks->form)) why = "form already taken by " + o->id;
+                if (!why.empty()) {
+                    res.receipts.push_back("form " + id + ": " + why);
+                    continue;
+                }
+                near.push_back(ks);
+            }
+            std::sort(near.begin(), near.end(), [&](const QuestionKind* x, const QuestionKind* y) {
+                return std::find(order.begin(), order.end(), x->form) < std::find(order.begin(), order.end(), y->form);
+            });
+            const unllm::Card card_saved = card_;
+            const std::string kind_saved = kind_;
+            std::size_t added = 0;
+            for (const QuestionKind* ks : near) {
+                if (added == 2) {
+                    res.receipts.push_back("form " + ks->id + ": two already added");
+                    continue;
+                }
+                // The sibling's form as the grammar would have read it, on the same reading otherwise.
+                unllm::Reading alt = reading;
+                alt.form = Form::Open;
+                alt.wants = unllm::Wants::Fact;
+                alt.judge = unllm::Judge::None;
+                if (ks->form == "yes or no") alt.form = Form::Polar;
+                else if (family(ks->form) == "when") alt.wants = unllm::Wants::Time;
+                else if (ks->form == "a cause") alt.wants = unllm::Wants::Cause;
+                else if (ks->form == "which thing") alt.wants = unllm::Wants::Name;
+                else if (family(ks->form) == "value") alt.wants = unllm::Wants::Quantity;
+                else if (ks->form == "how often or how long") alt.wants = unllm::Wants::Duration;
+                kind_ = ks->id;
+                card_ = card_saved;
+                const AskResult s = answers_from_records(ks->id) ? answer_records(ks->id, alt, now)
+                                                                 : answer_reading(alt, unllm::tokenize(q), raw_tokens, question, now);
+                std::string why;
+                if (s.refused) why = "refused";
+                else if (s.undecided) why = "undecided";
+                else if (s.body.empty()) why = "nothing to say";
+                else if (s.branch == res.branch) why = "the same answer code (" + s.branch + ")";
+                else if (s.branch.find("none") != std::string::npos) why = "no records (" + s.branch + ")";
+                else if (s.body.rfind("No ", 0) == 0) why = "a bare no";
+                else if (s.body.size() > 400) why = "too long";
+                else if (res.body.find(s.body.substr(0, 60)) != std::string::npos) why = "already said";
+                else {
+                    // A form whose every figure and time the main answer already gives repeats it: left out.
+                    static const std::regex figure("[0-9]+:[0-9]{2}|[0-9]+(?:[.,][0-9]+)?%?");
+                    bool fresh_fact = false, any = false;
+                    for (std::sregex_iterator it(s.body.begin(), s.body.end(), figure), end; it != end; ++it) {
+                        any = true;
+                        if (res.body.find(it->str()) == std::string::npos && res.lead.find(it->str()) == std::string::npos) fresh_fact = true;
+                    }
+                    if (any && !fresh_fact) why = "its figures are already in the answer";
+                }
+                if (!why.empty()) {
+                    res.receipts.push_back("form " + ks->id + ": " + why + " [" + s.branch + "]");
+                    continue;
+                }
+                res.notes.push_back((s.lead.empty() ? std::string() : s.lead + " ") + s.body);
+                res.receipts.push_back("also answered: " + ks->id + " [" + s.branch + "]");
+                ++added;
+            }
+            kind_ = kind_saved;
+            card_ = card_saved;
         }
     // "when i had the zoom call": a clause about the person, or a thing "during" names, that no record matches leaves
     // the time asked, and says so; one placed says which record it is.
