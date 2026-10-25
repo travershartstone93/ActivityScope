@@ -200,6 +200,8 @@ private:
     int64_t event_at_ = 0;              // the event the last question's clause named, placed (0: none)
     std::string event_what_;            // its record ("ollama.service failed: ...")
     bool event_unmatched_ = false;      // the clause, the person's doing or a "during" thing, matched no record set
+    std::string event_nearest_;         // when unmatched: what the clause was nearest to, in plain words ("the battery and sleep")
+    std::string sleep_note_;            // "while i was asleep": how the sleep was placed from the records
     std::vector<std::string> condition_tried_;  // words of a "while ..." clause that named no program
 };
 

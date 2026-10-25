@@ -9,17 +9,16 @@ every 2 s. A job's item appears when it starts and closes when it ends;
 one whose process died closes as "stopped". The terminal view
 (`unllm_ingest.py progress --watch`) shows the same numbers.
 
-The commands Claude Code (or one of its agents) has been running for more than
-a minute share one item at most, with no percentage (KDE draws that as a bar
-sliding back and forth: "still running", not a measure): titled by the
-command's first two comment lines, or "Claude: N commands running", showing
-how long the oldest has run. The item is not shown while any counted bar is
-open, and closes when the commands end.
+Plasma draws any job below 1 % as a bar sliding back and forth (it has no
+separate "unknown" state), so a live job is sent as at least 1 %. There is
+no item for a command with nothing to count: Plasma could only draw it
+sliding, which reads as broken. Anything long gets a counted task instead.
 
 Needs a KDE Plasma session (org.kde.JobViewServer) and python-gobject.
 Without unllm_ingest.py next to it, only task files are shown.
 """
 
+import math
 import os
 import signal
 import sys
@@ -37,8 +36,6 @@ except ImportError:
 
 SERVICE, SERVER = "org.kde.JobViewServer", "/JobViewServer"
 DESKTOP = "unllm-progress"  # ~/.local/share/applications/unllm-progress.desktop: the name and icon shown
-CLAUDE_SHELL = "/.claude/shell-snapshots/"  # in the command line of every shell Claude Code runs a command in
-SHELL_AFTER = 60  # seconds a command runs before it gets a bar of its own
 
 
 def human_time(seconds):
@@ -50,64 +47,18 @@ def human_time(seconds):
     return f"{s // 3600} h {s % 3600 // 60} min"
 
 
-def proc_table():
-    """{pid: (ppid, start time)} for every process, from /proc."""
-    tick = os.sysconf("SC_CLK_TCK")
-    with open("/proc/stat") as f:
-        boot = next(int(line.split()[1]) for line in f if line.startswith("btime"))
-    out = {}
-    for d in os.listdir("/proc"):
-        if not d.isdigit():
-            continue
-        try:
-            with open(f"/proc/{d}/stat") as f:
-                rest = f.read().rsplit(")", 1)[1].split()  # the fields after the command name: ppid is 4th, start 22nd
-            out[int(d)] = (int(rest[1]), boot + int(rest[19]) / tick)
-        except (OSError, IndexError, ValueError):
-            pass
-    return out
-
-
-def claude_command(pid):
-    """The title of a command Claude Code runs (its shell reads a snapshot from ~/.claude/shell-snapshots and evals
-    the command): the command's first two comment lines, which say what it does. None for any other process."""
-    try:
-        with open(f"/proc/{pid}/cmdline", "rb") as f:
-            cmd = f.read().replace(b"\0", b" ").decode(errors="replace")
-    except OSError:
-        return None
-    if CLAUDE_SHELL not in cmd or "eval '" not in cmd:
-        return None
-    body = cmd.split("eval '", 1)[1].replace("'\"'\"'", "'")
-    notes = [line.strip().lstrip("#").strip() for line in body.splitlines() if line.strip().startswith("#")][:2]
-    return " ".join(notes) or body.strip().splitlines()[0][:60]
+def percent(fraction):
+    """What Plasma is told: whole percent, rounded up, never below 1 (below 1 it draws the bar sliding)."""
+    return min(100, max(1, math.ceil(100 * max(0.0, fraction))))
 
 
 def jobs():
-    """{key: {title, fraction, detail, alive}} for everything running now."""
+    """{key: {title, fraction, detail, detail2, alive}} for everything running now."""
     out = {}
-    tasks = task_states()
-    for t in tasks:
+    for t in task_states():
         left = f", about {human_time(t['left'])} left" if t["left"] else ""
         out["task:" + t["name"]] = {"title": t["title"], "fraction": t["fraction"], "alive": t["alive"],
                                    "detail": f"{t['done']} of {t['total']}{left}", "detail2": t["detail"]}
-    # The commands Claude (or one of its agents) has run for a while share one item at most, with no count: it only
-    # says something is still running. None while any counted bar is open: that bar is the real progress.
-    if not any(t["alive"] for t in tasks):
-        table, now = proc_table(), time.time()
-        titles = {pid: claude_command(pid) for pid in table}
-        running = []
-        for pid, (ppid, start) in table.items():
-            # a subshell of a counted command carries the same command line: the outermost shell counts, once
-            if now - start < SHELL_AFTER or titles[pid] is None or titles.get(ppid) is not None:
-                continue
-            running.append((start, titles[pid]))
-        if running:
-            running.sort()
-            start, title = running[0]
-            out["shell"] = {"title": title if len(running) == 1 else f"Claude: {len(running)} commands running",
-                            "fraction": None, "alive": True, "detail": f"running {human_time(now - start)}",
-                            "detail2": title if len(running) > 1 else "a command started by Claude, with no count of its own"}
     if ui is None:
         return out
     running = ui.indexers_running()
@@ -148,9 +99,8 @@ class Tray:
         fields = {"title": GLib.Variant("s", job["title"]),
                   "infoMessage": GLib.Variant("s", job["detail"]),
                   "descriptionLabel1": GLib.Variant("s", "Now"),
-                  "descriptionValue1": GLib.Variant("s", job["detail2"] or job["detail"])}
-        if job["fraction"] is not None:  # a command with no count of its own shows no percentage
-            fields["percent"] = GLib.Variant("u", int(round(100 * max(0.0, min(1.0, job["fraction"])))))
+                  "descriptionValue1": GLib.Variant("s", job["detail2"] or job["detail"]),
+                  "percent": GLib.Variant("u", percent(job["fraction"] or 0.0))}
         self.call(self.views[key], "update", "(a{sv})", (fields,))
 
     def close(self, key, error=""):

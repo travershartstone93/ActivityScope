@@ -2090,6 +2090,10 @@ void test_names() {
     sqlite3_open_v2(dbp.c_str(), &db, SQLITE_OPEN_READONLY, nullptr);
     unllm::Analyzer an;
     an.set_synonyms(unllm::load_synonyms("vendor/unllm/data/synonyms.txt"));
+    // A doing-word in -ing form after "after" opens an event clause; the person's sleep marks the window for narrowing.
+    CHECK(an.read("why was the laptop slow after waking up this morning", now).event_clause == "waking up");
+    CHECK(an.read("what was eating cpu last night while i was asleep", now).window.sleep);
+    CHECK(!an.read("what happened after the update last night", now).window.sleep);
     as::Names names;
     names.open(db);
     names.set_model(&model);
@@ -2473,6 +2477,8 @@ void test_records_data() {
         CHECK(has(r, "100%") && has(r, "of 8.3 GB"));
         CHECK(has(r, "at the cap") && has(r, "Thu 07:10"));
         CHECK(has(r, "All of it is zram"));
+        // Asked as yes or no: it filled, so yes, said first.
+        CHECK(as_kind("memory.swap.value.window", "was swap getting hit yesterday").answer.rfind("Yes.", 0) == 0);
         // Wednesday's readings have no size: the same device now (every size recorded matches), and said so.
         as::AskResult w = as_kind("memory.swap.value.window", "how full did the swap get on wednesday");
         CHECK(has(w, "100%") && has(w, "wasn't recorded"));
@@ -3299,6 +3305,9 @@ void test_answer_shapes() {
         CHECK(lacks(r, "main cause"));
         // The evening: the swap full, nobody waiting on memory, RAM at half: the swap.
         as::AskResult e = ask_as("", "was it the ram or the swap that was full yesterday evening");
+        // The highest memory use and its moment lead; the program ranking follows.
+        CHECK(ask_as("memory.which.window", "what was the highest memory use yesterday and which program caused it").answer
+                  .rfind("Memory use peaked at 90% at Thu 10:53", 0) == 0);
         CHECK(has(e, "The swap") && lacks(e, "Both") && has(e, "50"));
         // Two things that are not memory measures keep their usual answer.
         CHECK(ask_as("", "was it the cpu or the gpu that got hot yesterday morning").branch.rfind("choice:memory", 0) != 0);

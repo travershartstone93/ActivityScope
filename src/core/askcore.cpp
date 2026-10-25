@@ -911,6 +911,24 @@ AskResult Ask::ask_once(const std::string& question, int64_t now, const std::str
             }
         }
     }
+    // "While i was asleep": no record holds the person's sleep, but the records hold what the person started. The longest
+    // stretch of the night in which nothing of theirs started, three hours or more, is taken as the sleep, and said.
+    sleep_note_.clear();
+    if (reading.window.sleep && db_) {
+        std::vector<int64_t> starts{reading.window.from};
+        for (const auto& x : query(db_, "SELECT CAST(started AS INTEGER), 0 FROM procs WHERE started >= ?1 AND started < ?2 AND "
+                                        "(unit LIKE 'app-%' OR unit LIKE 'vte-spawn-%') ORDER BY started", {reading.window.from, reading.window.to}))
+            starts.push_back(x.t);
+        starts.push_back(reading.window.to);
+        std::size_t best = 0;
+        for (std::size_t i = 1; i + 1 < starts.size(); ++i)
+            if (starts[i + 1] - starts[i] > starts[best + 1] - starts[best]) best = i;
+        if (starts.size() > 2 && starts[best + 1] - starts[best] >= 3 * 3600) {
+            reading.window.from = starts[best] / 60 * 60;
+            reading.window.to = starts[best + 1] / 60 * 60;
+            sleep_note_ = "Taking your sleep as " + span_text(reading.window.from, reading.window.to, " to ") + ", when nothing of yours started.";
+        }
+    }
     // Everyday words for a program ("the movie player", "that fan control thing"): when the reading names none,
     // the program the words describe in the records joins the reading under the records' name, so the program
     // filters apply.
@@ -957,6 +975,7 @@ AskResult Ask::ask_once(const std::string& question, int64_t now, const std::str
     event_at_ = 0;
     event_what_.clear();
     event_unmatched_ = false;
+    event_nearest_.clear();
     if (fresh) place_event(reading, now);
     card_ = unllm::Card{};
     card_.question = q;
@@ -1142,8 +1161,11 @@ AskResult Ask::ask_once(const std::string& question, int64_t now, const std::str
     // "when i had the zoom call": a clause about the person, or a thing "during" names, that no record matches leaves
     // the time asked, and says so; one placed says which record it is.
     if (fresh && event_unmatched_ && !res.refused)
-        res.scope.insert(res.scope.begin(), "Nothing in the records matches \"" + reading.event_clause + "\": no program on record is "
-                                            "called or described that way, so this is for the time asked.");
+        res.scope.insert(res.scope.begin(), "Nothing in the records matches \"" + reading.event_clause + "\"" +
+                                            (event_nearest_.empty() ? std::string(": no program on record is called or described that way")
+                                                                    : " in that window: nothing about " + event_nearest_ + " was recorded then") +
+                                            ", so this is for the time asked.");
+    if (fresh && !sleep_note_.empty() && !res.refused) res.scope.insert(res.scope.begin(), sleep_note_);
     if (fresh && reading.event_during && event_at_ && !res.refused)
         res.scope.insert(res.scope.begin(), "Taking \"" + reading.event_clause + "\" as " + event_what_ + " (" + when_text(event_at_) + "):");
     // "This morning" asked at 02:38: say so, then answer yesterday's.
@@ -1299,7 +1321,30 @@ void Ask::place_event(unllm::Reading& r, int64_t now) {
     }
     gather();
     event_unmatched_ = strict && sources.empty();
-    if (sources.empty()) return;
+    if (sources.empty()) {
+        // "After waking up" with no wake then: the clause is nearest a kind of record the machine does keep (sleeps and
+        // wakes), and none falls in the window; the note says so in the catalogue's plain words. The person's own doing
+        // keeps the note about programs; a clause the answer code reads itself ("when the fan hit its peak") is nearest
+        // no record set and gets no note.
+        if (!strict && !from_clause) {
+            const int64_t f0 = from, t0 = to;
+            from = 0;
+            to = now;
+            for (const auto& [id, score] : km.runners) {
+                if (score < placer().cutoff("records", 0.70f)) break;
+                const QuestionKind* k = kinds_.find(id);
+                if (!k || k->topic == "none" || k->topic == "programs") continue;
+                std::string key;
+                if (records(id, &key).empty()) continue;
+                event_nearest_ = kinds_.plain("topic", k->topic);
+                event_unmatched_ = true;
+                break;
+            }
+            from = f0;
+            to = t0;
+        }
+        return;
+    }
     // Which record set, and for the session's own lines which line: the title nearest the clause by meaning
     // ("i shut the lid" is "Lid closed", not an out-of-memory kill).
     std::size_t pick = 0;
@@ -2954,7 +2999,23 @@ AskResult Ask::answer_reading(const unllm::Reading& r, const std::vector<unllm::
             }
             std::string what = mem ? "the most memory " + reach + ": " + human_bytes(rows[0].a) + " at its peak"
                                    : "the most processor time " + reach + ": " + duration_text(int64_t(rows[0].a));
-            res.body = unllm::realize({{{rows[0].s1, true}, "use", what, Tense::Past}});
+            // The machine's own peak and when, and who held the most at that moment, come first: "the highest memory use
+            // and which program caused it" is answered in that order.
+            std::string peak;
+            if (mem) {
+                // The per-second readings reach back days, the hourly summaries months: the higher of the two peaks.
+                auto pk = query(db_, "SELECT CAST(t AS INTEGER), mem_pct FROM samples WHERE t >= ?1 AND t < ?2 AND mem_pct > 0 ORDER BY mem_pct DESC, t LIMIT 1", {sfrom, to});
+                auto ph = query(db_, "SELECT hour_ts, max FROM samples_hourly WHERE metric = 'mem_pct' AND hour_ts >= ?1 AND hour_ts < ?2 AND max > 0 ORDER BY max DESC, hour_ts LIMIT 1", {sfrom, to});
+                const bool hourly = !ph.empty() && (pk.empty() || ph[0].a > pk[0].a + 0.5);
+                if (hourly) pk = ph;
+                if (!pk.empty()) {
+                    auto held = hourly ? query(db_, "SELECT 0, MAX(peak_rss), 0, name, MAX(cmdline) FROM minute_top WHERE minute >= ?1 AND minute < ?1 + 3600 AND peak_rss > 0 GROUP BY name ORDER BY 2 DESC LIMIT 1", {pk[0].t})
+                                       : query(db_, "SELECT 0, MAX(peak_rss), 0, name, MAX(cmdline) FROM minute_top WHERE minute >= ?1 - 60 AND minute <= ?1 + 60 AND peak_rss > 0 GROUP BY name ORDER BY 2 DESC LIMIT 1", {pk[0].t});
+                    peak = "Memory use peaked at " + fmt("%.0f%%", pk[0].a) + (hourly ? " in the hour from " : " at ") + when_text(pk[0].t) +
+                           (held.empty() ? std::string() : ", when " + shown_name(held[0].s1, held[0].s2) + " held the most, " + human_bytes(held[0].a)) + ". ";
+                }
+            }
+            res.body = peak + unllm::realize({{{rows[0].s1, true}, "use", what, Tense::Past}});
             std::vector<std::string> next;
             for (std::size_t i = 1; i < rows.size(); ++i)
                 if (rows[i].a > 0) next.push_back(shown_name(rows[i].s1, rows[i].s2) + " with " + (mem ? human_bytes(rows[i].a) : duration_text(int64_t(rows[i].a))));
@@ -3631,6 +3692,13 @@ AskResult Ask::answer_reading(const unllm::Reading& r, const std::vector<unllm::
                 std::string text = "Between " + span_text(from, to, " and ") + " the disks read " + human_bytes(rw[0].a) + " and wrote " + human_bytes(rw[0].b) +
                                    ", at most " + human_bytes(top[0].a) + "/s (at " + when_text(top[0].t) + ")" +
                                    (top[0].a < busy ? ", under the " + human_bytes(busy) + "/s the recorder counts as busy, so it kept no disk event." : ".");
+                // The programs running at the busiest moment that had started in the window: the burst's likeliest owners.
+                std::vector<std::string> at_peak;
+                for (const auto& x : query(db_, "SELECT MIN(started), MAX(IFNULL(ended, ?3)), 0, name, MAX(cmdline) FROM procs WHERE started >= ?1 "
+                                                "AND started <= ?2 + 60 AND IFNULL(ended, ?3) >= ?2 - 60 AND cpu_seconds >= 0.5 GROUP BY name "
+                                                "ORDER BY 1 DESC LIMIT 2", {from, top[0].t, now}))
+                    at_peak.push_back(shown_name(x.s1, x.s2) + ", which ran from " + clock_text(x.t) + " to " + clock_text(int64_t(x.a)));
+                if (!at_peak.empty()) text += " The burst at " + clock_text(top[0].t) + " lines up with " + unllm::join_list(at_peak) + ".";
                 std::vector<std::string> each;
                 for (const auto& x : query(db_, "SELECT 0, SUM(io_bytes), 0, name, MAX(cmdline) FROM minute_top WHERE minute > ?1 - 60 AND minute < ?2 "
                                                 "AND io_bytes > 0 GROUP BY name ORDER BY 2 DESC LIMIT 3", {from, to}))
@@ -3644,7 +3712,7 @@ AskResult Ask::answer_reading(const unllm::Reading& r, const std::vector<unllm::
                     std::vector<std::string> others;
                     for (const auto& x : query(db_, "SELECT 0, 0, 0, name FROM procs WHERE started >= ?1 AND started < ?2 AND user <> ?3 AND cpu_seconds >= 0.5 "
                                                     "GROUP BY name ORDER BY MIN(started) LIMIT 4", {from, to}, {owner[0].s1}))
-                        others.push_back(x.s1);
+                        if (std::none_of(at_peak.begin(), at_peak.end(), [&](const std::string& p) { return p.rfind(x.s1, 0) == 0; })) others.push_back(x.s1);
                     if (!others.empty()) text += " Programs of the system and other accounts that started then: " + unllm::join_list(others) + ".";
                 }
                 res.body = text;
@@ -5661,10 +5729,12 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
             return res;
         }
         const Row* hi = &rows[0];
+        const Row* lo = &rows[0];
         double sum = 0;
         bool unsized = false;
         for (const auto& x : rows) {
             if (x.a > hi->a) hi = &x;
+            if (x.a < lo->a) lo = &x;
             sum += x.a;
             unsized = unsized || x.b <= 0;
         }
@@ -5685,9 +5755,10 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
             note = " The size wasn't recorded then; the peak is the swap's size now (" + human_bytes(live) + ") to the byte, so it is the same device.";
         }
         const double size = hi->b > 0 ? hi->b : fallback;
+        int64_t full = 0;
         if (size > 0) {
             // At the cap: a reading within 0.1% of its size.
-            int64_t full = 0, first = 0, last = 0;
+            int64_t first = 0, last = 0;
             for (const auto& x : rows) {
                 const double cap = x.b > 0 ? x.b : fallback;
                 if (cap > 0 && x.a >= 0.999 * cap) {
@@ -5714,6 +5785,12 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
         }
         res.receipts.push_back(std::to_string(rows.size()) + (hourly ? " hourly records" : " readings") + " from " + when_text(rows.front().t) + " to " +
                                when_text(rows.back().t));
+        // "Was swap getting hit": yes when it filled, or grew by a twentieth of its size (a tenth of its peak, size unknown).
+        if (r.form == Form::Polar) {
+            const bool hit = full > 0 || hi->a - lo->a >= (size > 0 ? 0.05 * size : 0.1 * hi->a);
+            res.lead = hit ? "Yes." : "No.";
+            if (!hit) res.body += " It stayed between " + human_bytes(lo->a) + " and " + human_bytes(hi->a) + ", so it wasn't being hit.";
+        }
         res.branch = "records:swap";
         return res;
     }
