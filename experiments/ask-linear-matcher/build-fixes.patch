@@ -1,0 +1,26 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index f3d9f71..d0512a5 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -18,7 +18,7 @@ add_subdirectory(vendor/unllm EXCLUDE_FROM_ALL)
+ file(GLOB CORE_SOURCES CONFIGURE_DEPENDS src/core/*.cpp)
+ add_library(ascore STATIC ${CORE_SOURCES})
+ target_include_directories(ascore PUBLIC src/core)
+-target_link_libraries(ascore PUBLIC unllm SQLite3::SQLite3 PkgConfig::SYSTEMD ${CMAKE_DL_LIBS})
++target_link_libraries(ascore PUBLIC unllm SQLite::SQLite3 PkgConfig::SYSTEMD ${CMAKE_DL_LIBS})
+ 
+ option(AS_BUILD_APP "Build the Qt application" ON)
+ if(AS_BUILD_APP AND EXISTS ${CMAKE_SOURCE_DIR}/src/app/main.cpp)
+diff --git a/vendor/unllm/src/meaning.cpp b/vendor/unllm/src/meaning.cpp
+index 8356e1c..8a44280 100644
+--- a/vendor/unllm/src/meaning.cpp
++++ b/vendor/unllm/src/meaning.cpp
+@@ -241,7 +241,7 @@ std::vector<float> Meaning::embed(const std::string& text, bool query) const {
+     if (norm > 0)
+         for (float& x : out) x /= norm;
+ #else
+-    (void)question;
++    (void)text; (void)query;
+ #endif
+     return out;
+ }

@@ -1,0 +1,288 @@
+diff --git a/src/core/kinds.cpp b/src/core/kinds.cpp
+index d1418cb..c59b761 100644
+--- a/src/core/kinds.cpp
++++ b/src/core/kinds.cpp
+@@ -3,6 +3,7 @@
+ #include <sys/stat.h>
+ 
+ #include <algorithm>
++#include <cmath>
+ #include <cstdint>
+ #include <cstdio>
+ #include <cstring>
+@@ -10,6 +11,7 @@
+ #include <map>
+ #include <set>
+ #include <sstream>
++#include <unordered_map>
+ 
+ #include "unllm/meaning.h"
+ #include "unllm/unllm.h"
+@@ -39,6 +41,128 @@ int64_t stamp_of(const std::string& path) {  // size and change time: the cache
+     return int64_t(st.st_size) * 1000003 + int64_t(st.st_mtime);
+ }
+ 
++// The words of a question as the trainer (tools/kindtrain.py) sees them: ASCII lower case, runs of letters,
++// digits and '%'. Everything else, non-ASCII included, separates words.
++std::vector<std::string> plain_words(const std::string& s) {
++    std::vector<std::string> out;
++    std::string cur;
++    for (unsigned char c : s) {
++        if (c >= 'A' && c <= 'Z') c = static_cast<unsigned char>(c + 32);
++        if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '%') {
++            cur += char(c);
++        } else if (!cur.empty()) {
++            out.push_back(cur);
++            cur.clear();
++        }
++    }
++    if (!cur.empty()) out.push_back(cur);
++    return out;
++}
++
++// The linear matcher: tf-idf over words and character 3-5-grams, one weight row per feature, one logit per kind.
++// Written by tools/kindtrain.py as weights.bin beside phrasings.tsv; absent, the nearest phrasing decides.
++struct Linear {
++    std::vector<std::string> ids;
++    std::vector<float> bias;
++    std::unordered_map<std::string, int> word, gram;  // feature -> row
++    std::vector<float> idf;                           // per row
++    std::vector<float> w;                             // rows x kinds
++    std::unordered_map<std::string, std::string> chat, syn;
++    int nk = 0, nf = 0;
++    bool ok = false;
++
++    bool load(const std::string& path) {
++        std::ifstream in(path, std::ios::binary);
++        if (!in) return false;
++        char magic[8];
++        in.read(magic, 8);
++        if (!in || std::memcmp(magic, "ASKLIN1\0", 8) != 0) return false;
++        int32_t nchat = 0, nsyn = 0;
++        in.read(reinterpret_cast<char*>(&nk), 4);
++        in.read(reinterpret_cast<char*>(&nf), 4);
++        in.read(reinterpret_cast<char*>(&nchat), 4);
++        in.read(reinterpret_cast<char*>(&nsyn), 4);
++        auto str = [&] {
++            uint16_t n = 0;
++            in.read(reinterpret_cast<char*>(&n), 2);
++            std::string s(n, '\0');
++            in.read(s.data(), n);
++            return s;
++        };
++        auto f32 = [&] {
++            float v = 0;
++            in.read(reinterpret_cast<char*>(&v), 4);
++            return v;
++        };
++        for (int k = 0; k < nk; ++k) {
++            ids.push_back(str());
++            bias.push_back(f32());
++        }
++        idf.resize(std::size_t(nf));
++        for (int i = 0; i < nf; ++i) {
++            char block = 0;
++            in.read(&block, 1);
++            std::string f = str();
++            idf[std::size_t(i)] = f32();
++            (block == 0 ? word : gram)[f] = i;
++        }
++        w.resize(std::size_t(nf) * std::size_t(nk));
++        in.read(reinterpret_cast<char*>(w.data()), std::streamsize(w.size() * sizeof(float)));
++        for (int i = 0; i < nchat; ++i) {
++            std::string a = str();
++            chat[a] = str();
++        }
++        for (int i = 0; i < nsyn; ++i) {
++            std::string a = str();
++            syn[a] = str();
++        }
++        ok = bool(in) && nk > 0 && nf > 0;
++        return ok;
++    }
++
++    std::vector<std::string> normalized(const std::string& question) const {
++        std::vector<std::string> out;
++        for (const std::string& raw : plain_words(question)) {
++            auto c = chat.find(raw);
++            for (const std::string& piece : plain_words(c == chat.end() ? raw : c->second)) {
++                auto s = syn.find(piece);
++                out.push_back(s == syn.end() ? piece : s->second);
++            }
++        }
++        return out;
++    }
++
++    // One probability per kind, in ids order.
++    std::vector<float> probabilities(const std::string& question) const {
++        std::unordered_map<int, float> words, grams;
++        for (const std::string& t : normalized(question)) {
++            if (auto it = word.find(t); it != word.end()) words[it->second] += 1;
++            const std::string padded = " " + t + " ";
++            for (std::size_t n = 3; n <= 5; ++n)
++                for (std::size_t i = 0; i + n <= padded.size(); ++i)
++                    if (auto it = gram.find(padded.substr(i, n)); it != gram.end()) grams[it->second] += 1;
++        }
++        std::vector<float> logits(bias);
++        for (auto* bag : {&words, &grams}) {
++            double norm = 0;
++            for (auto& [row, count] : *bag) {
++                count = (1.0f + std::log(count)) * idf[std::size_t(row)];
++                norm += double(count) * count;
++            }
++            const float scale = norm > 0 ? float(1.0 / std::sqrt(norm)) : 0.0f;
++            for (const auto& [row, x] : *bag) {
++                const float* wr = w.data() + std::size_t(row) * std::size_t(nk);
++                for (int k = 0; k < nk; ++k) logits[std::size_t(k)] += x * scale * wr[k];
++            }
++        }
++        const float top = *std::max_element(logits.begin(), logits.end());
++        double sum = 0;
++        for (float& l : logits) sum += (l = std::exp(l - top));
++        for (float& l : logits) l = float(l / sum);
++        return logits;
++    }
++};
++
+ }  // namespace
+ 
+ struct Kinds::Impl {
+@@ -51,8 +175,24 @@ struct Kinds::Impl {
+     std::map<std::string, std::set<std::string>> kinds_of;   // a phrasing word -> the kinds whose phrasings use it
+     int d = 0;
+     unllm::Meaning model;
++    Linear linear;
++    std::vector<std::size_t> linear_kind;  // linear class -> kind index
++    std::vector<std::vector<std::size_t>> by_kind;  // kind index -> its phrasings
++    std::vector<std::vector<std::string>> phrasing_words;  // each phrasing's plain words, sorted
+     bool ready = false;
+ 
++    // The kind's phrasing sharing the most words with the question, for showing how it was taken.
++    std::string closest_phrasing(std::size_t kind, const std::vector<std::string>& sorted_words) const {
++        std::size_t best = 0, best_at = by_kind[kind].empty() ? phrasing.size() : by_kind[kind][0];
++        for (std::size_t i : by_kind[kind]) {
++            std::vector<std::string> shared;
++            std::set_intersection(sorted_words.begin(), sorted_words.end(), phrasing_words[i].begin(),
++                                  phrasing_words[i].end(), std::back_inserter(shared));
++            if (shared.size() > best) best = shared.size(), best_at = i;
++        }
++        return best_at < phrasing.size() ? phrasing[best_at] : std::string();
++    }
++
+     bool read_cache(const std::string& path, int64_t stamp) {
+         std::ifstream in(path, std::ios::binary);
+         if (!in) return false;
+@@ -115,7 +255,35 @@ bool Kinds::load(const std::string& dir, const std::string& cache, const std::st
+                 im.kinds_of[w].insert(f[0]);
+             }
+     }
+-    if (im.phrasing.empty() || !im.model.load_model(model_dir)) return false;
++    if (im.phrasing.empty()) return false;
++    im.by_kind.assign(im.kinds.size(), {});
++    im.phrasing_words.resize(im.phrasing.size());
++    for (std::size_t i = 0; i < im.owner.size(); ++i) {
++        im.by_kind[std::size_t(im.owner[i])].push_back(i);
++        im.phrasing_words[i] = plain_words(im.phrasing[i]);
++        std::sort(im.phrasing_words[i].begin(), im.phrasing_words[i].end());
++        im.phrasing_words[i].erase(std::unique(im.phrasing_words[i].begin(), im.phrasing_words[i].end()),
++                                   im.phrasing_words[i].end());
++    }
++    // The linear model, when the trainer has written one: it maps a question to a kind on its own, and the
++    // embedding model is then only needed for other matching by meaning.
++    if (im.linear.load(dir + "/weights.bin")) {
++        im.linear_kind.clear();
++        for (const std::string& id : im.linear.ids) {
++            auto it = im.index.find(id);
++            if (it == im.index.end()) {  // a kind the catalogue no longer has: the file is stale
++                im.linear = Linear();
++                break;
++            }
++            im.linear_kind.push_back(it->second);
++        }
++    }
++    const bool have_model = im.model.load_model(model_dir);
++    if (!have_model && !im.linear.ok) return false;
++    if (!have_model) {
++        im.ready = true;
++        return true;
++    }
+     im.d = im.model.dim();
+     const int64_t stamp = stamp_of(dir + "/phrasings.tsv");
+     const std::string vec = cache + "/phrasings.vec";
+@@ -157,6 +325,25 @@ KindMatch Kinds::match(const std::string& question) const {
+     KindMatch out;
+     const Impl& im = *impl_;
+     if (!im.ready) return out;
++    if (im.linear.ok) {
++        const std::vector<float> p = im.linear.probabilities(question);
++        std::vector<std::string> words = plain_words(question);
++        std::sort(words.begin(), words.end());
++        words.erase(std::unique(words.begin(), words.end()), words.end());
++        std::vector<std::size_t> order(p.size());
++        for (std::size_t i = 0; i < order.size(); ++i) order[i] = i;
++        std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) { return p[a] > p[b]; });
++        // The closest phrasing is shown for the kinds a caller may choose among; the long tail gets none.
++        for (std::size_t j : order) {
++            const std::size_t kind = im.linear_kind[j];
++            out.runners.emplace_back(im.kinds[kind].id, p[j]);
++            out.runner_phrasings.push_back(out.runners.size() <= 8 ? im.closest_phrasing(kind, words) : std::string());
++        }
++        out.id = out.runners.front().first;
++        out.phrasing = out.runner_phrasings.front();
++        out.score = out.runners.front().second;
++        return out;
++    }
+     const auto q = im.model.embed(question, false);
+     if (int(q.size()) != im.d) return out;
+     std::vector<float> best(im.kinds.size(), -2.0f);  // each kind's nearest phrasing
+diff --git a/src/core/kinds.h b/src/core/kinds.h
+index 1f3c426..073dcff 100644
+--- a/src/core/kinds.h
++++ b/src/core/kinds.h
+@@ -1,8 +1,11 @@
+ #pragma once
+ // The catalogue of question kinds ask can answer, and the matcher that maps a
+-// typed question to one of them. Every kind carries example phrasings; each
+-// phrasing is turned into a vector once (bge-small through unllm's embedder)
+-// and a question goes to the kind of the phrasing nearest to it. Nothing
++// typed question to one of them. Every kind carries example phrasings. When
++// tools/kindtrain.py has written weights.bin beside them, a linear model
++// trained on those phrasings (tf-idf over words and character n-grams) gives
++// each kind a probability and the most probable wins; otherwise each phrasing
++// is turned into a vector once (bge-small through unllm's embedder) and a
++// question goes to the kind of the phrasing nearest to it. Nothing
+ // generative: the same question always lands on the same kind, and the
+ // answer for a kind is computed from the records by the kind's own code.
+ #include <memory>
+@@ -22,11 +25,11 @@ struct QuestionKind {
+ };
+ 
+ struct KindMatch {
+-    std::string id;        // the kind of the nearest phrasing, "" when nothing is loaded
+-    std::string phrasing;  // that phrasing
+-    float score = 0;       // cosine similarity, 1 is identical
+-    std::vector<std::pair<std::string, float>> runners;  // every kind with its nearest phrasing's score, best first
+-    std::vector<std::string> runner_phrasings;           // each runner's nearest phrasing, same order
++    std::string id;        // the kind chosen, "" when nothing is loaded
++    std::string phrasing;  // the phrasing of that kind closest to the question
++    float score = 0;       // the linear model's probability, or the nearest phrasing's cosine similarity (1 is identical)
++    std::vector<std::pair<std::string, float>> runners;  // every kind with its score, best first
++    std::vector<std::string> runner_phrasings;           // each runner's closest phrasing, same order
+ };
+ 
+ class Kinds {
+diff --git a/tests/test_core.cpp b/tests/test_core.cpp
+index 4c9372c..caa4399 100644
+--- a/tests/test_core.cpp
++++ b/tests/test_core.cpp
+@@ -1767,8 +1767,8 @@ void test_kinds() {
+     const char* em = std::getenv("ASK_EMBED_MODEL");
+     const char* home = std::getenv("HOME");
+     const std::string model = em ? em : std::string(home ? home : "") + "/.local/share/unllm/models/bge-small-en-v1.5";
+-    if (access((model + "/model.onnx").c_str(), R_OK) != 0) {
+-        std::puts("  no embedding model: matcher checks skipped");
++    if (access((model + "/model.onnx").c_str(), R_OK) != 0 && access("data/kinds/weights.bin", R_OK) != 0) {
++        std::puts("  no embedding model and no weights.bin: matcher checks skipped");
+         return;
+     }
+     // The phrasing vectors are kept beside the test binary: only a changed phrasings.tsv pays for them again.

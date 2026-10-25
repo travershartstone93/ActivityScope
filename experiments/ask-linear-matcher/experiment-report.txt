@@ -1,0 +1,120 @@
+train: 5913 phrasings, 138 kinds
+held-out real questions from tests: 173 (exact phrasings excluded); 5 accept more than one kind; 70 kinds covered
+
+== 1. decision rule (features: word 1-2g + char 3-5g, lowercased) ==
+model                                      CV  held-out
+1-NN cosine (today's rule)              0.511     0.699
+5-NN distance-weighted                  0.539     0.682
+ComplementNB                            0.581     0.688
+RidgeClassifier                         0.651     0.775
+SGD modified_huber                      0.707     0.769
+LinearSVC C=0.3                         0.743     0.809
+LinearSVC C=1                           0.764     0.809
+LinearSVC C=3                           0.767     0.827
+LogisticRegression C=20                 0.772     0.832
+
+== 2. features (LinearSVC C=1) ==
+features                                   CV  held-out
+word 1g only                            0.751     0.821
+word 1-2g only                          0.705     0.786
+word 1-3g only                          0.672     0.769
+char 3-5g only                          0.750     0.827
+char 2-6g only                          0.751     0.809
+word 1-2g + char 3-5g                   0.764     0.809
+same + chatspeak/synonym normalisation  0.775     0.832
+word 1-3g + char 2-6g, normalised       0.765     0.827
+
+== 3. what the errors are (LinearSVC C=1, word+char, lowercased) ==
+held-out top-1: 0.809
+held-out top-2: 0.925
+held-out top-3: 0.942
+held-out, window axis ignored (unllm's time reader decides it): 0.838
+CV, window axis ignored: 0.786
+  axis topic        : CV 0.882   held-out 0.913
+  axis form         : CV 0.824   held-out 0.855
+  axis window       : CV 0.911   held-out 0.896
+  axis program-slot : CV 0.977   held-out 0.988
+held-out misses (question -> predicted | accepted):
+  what was keeping the laptop busy at 3am on tuesday                     -> diagnose.list.window | slow.which.window
+  wat was the laptop up to the other night before i shut the lid         -> battery.lid.when.window | diagnose.list.window
+  show past bios and firmware updates                                    -> identity.bios.flash | flash.list.window
+  services started at boot                                               -> startup.list.window | startup.list.now
+  net out while downloading                                              -> network.value.now | network.wifi.when.window
+  bios settings changed                                                  -> config.list.window | identity.bios.settings.none
+  did someone mess with the uefi settings                                -> config.list.window | identity.bios.settings.none
+  what time did the laptop start up on wednesday                         -> battery.charger.when.window | startup.when.reboot
+  did i restart around 1 yesterday? all my windows closed on me          -> none | startup.often.reboot
+  when did the laptop last wake up                                       -> slow.when.window.process | startup.when.reboot
+  what time did the laptop start up on october 11                        -> battery.charger.when.window | startup.when.reboot
+  anything weird happen since lunch yesterday                            -> diagnose.cause.window | diagnose.list.window
+  what startup stuff got removed yesterday                               -> updates.list.window | startup.list.window
+  which programs were open when the laptop cut out on october 16 in the  -> slow.procs.value.window | slow.which.window
+  which program crashes over and over this week                          -> crashes.list.window | crashes.which.window
+  at what times did the laptop sleep on thursday                         -> battery.sleep.list.window | battery.sleep.when.window
+  whats eating my memory right now                                       -> memory.value.now | memory.which.now
+  what is using all my ram at the moment                                 -> memory.value.now | memory.which.now
+  data sent to cloud                                                     -> sharing.when.window | sharing.which.now
+  cpu usage while ollama ran                                             -> slow.value.now | slow.value.window
+  how busy was the cpu while ollama was running                          -> heat.value.window.program | slow.value.window
+  did sysctl change since monday                                         -> updates.list.window | config.list.window
+  what changed on my system this week that broke wifi                    -> diagnose.list.window | updates.cause.window
+  when was the kernel last updated                                       -> updates.when.window | identity.kernel
+  what memory sticks does it have                                        -> identity.gpu | identity.ram
+  what filled up my drive this week                                      -> disk.space.trend.window | disk.space.which.now
+  what ate my disk space since monday                                    -> disk.space.trend.window | disk.space.which.now
+  disk space before monday backup                                        -> disk.space.value.now | disk.space.trend.window
+  how much free space was there before the backup on tuesday             -> disk.space.value.now | disk.space.trend.window
+  systemd crashes this week                                              -> crashes.list.window | startup.which.window
+  battery percent this morning                                           -> battery.value.now | battery.value.window
+  swap percent this morning                                              -> memory.swap.value.now | memory.swap.value.window
+  whats eating my memory this morning                                    -> memory.which.now | memory.which.window
+
+== 4. axis heads, scored over valid kinds only ==
+CV: 0.819
+held-out: 0.792
+
+== 5. confidence: can one threshold replace the hand-set cosine gates? (LogisticRegression) ==
+CV phrasings: coverage and accuracy of the answered part at each confidence floor
+  conf >= 0.0: answer 100.0% of questions, 0.772 right
+  conf >= 0.3: answer 84.3% of questions, 0.836 right
+  conf >= 0.4: answer 75.3% of questions, 0.864 right
+  conf >= 0.5: answer 66.4% of questions, 0.892 right
+  conf >= 0.6: answer 56.8% of questions, 0.917 right
+  conf >= 0.7: answer 46.9% of questions, 0.938 right
+  conf >= 0.8: answer 36.4% of questions, 0.954 right
+held-out: mean confidence when right 0.74, when wrong 0.42
+out-of-domain questions: max confidence 0.94, mean 0.39  (in-domain held-out mean 0.69)
+  0.87  did the sun crash yesterday              -> crashes.list.window
+  0.94  how do i cook a steak                    -> none
+  0.43  did my mum use the laptop                -> story.used.window
+  0.56  tell me a joke                           -> none
+  0.45  what is the meaning of life              -> trust.identity
+  0.32  whats the capital of france              -> none
+  0.12  write me a poem about autumn             -> trust.identity
+  0.09  how tall is the eiffel tower             -> disk.value.now
+  0.15  translate hello to spanish               -> none
+  0.24  who won the match last night             -> network.which.window
+  0.22  what should i have for dinner            -> none
+  0.32  is it going to rain tomorrow             -> none
+
+== 6. how many phrasings per kind are needed (LinearSVC, held-out real questions) ==
+  <=   5 per kind ( 690 phrasings): held-out 0.509
+  <=  10 per kind (1364 phrasings): held-out 0.624
+  <=  20 per kind (2572 phrasings): held-out 0.676
+  <=  40 per kind (4564 phrasings): held-out 0.809
+  <=  80 per kind (5514 phrasings): held-out 0.809
+  <= all per kind (5913 phrasings): held-out 0.809
+
+== 7. kinds the classifier cannot tell apart (CV, LinearSVC) ==
+   21 both ways  disk.value.now  <->  disk.which.now   (76, 38 phrasings)
+   19 both ways  startup.often.reboot  <->  startup.often.window   (37, 42 phrasings)
+   16 both ways  sharing.which.now  <->  sharing.yesno.either   (37, 39 phrasings)
+   14 both ways  disk.value.now  <->  disk.value.window   (76, 122 phrasings)
+   12 both ways  diagnose.list.window  <->  slow.list.window   (76, 38 phrasings)
+   11 both ways  slow.load.value.now  <->  slow.value.now   (31, 69 phrasings)
+   11 both ways  network.value.now  <->  network.which.now   (73, 38 phrasings)
+   11 both ways  sharing.which.window  <->  sharing.yesno.either   (35, 39 phrasings)
+   11 both ways  startup.often.reboot  <->  startup.when.reboot   (37, 34 phrasings)
+   10 both ways  disk.value.window  <->  disk.which.window   (122, 38 phrasings)
+   10 both ways  network.value.now  <->  network.value.window   (73, 120 phrasings)
+   10 both ways  battery.value.now  <->  battery.value.window   (34, 42 phrasings)
