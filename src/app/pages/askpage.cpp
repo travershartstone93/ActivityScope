@@ -44,7 +44,12 @@ AskPage::AskPage(QWidget* parent) : QWidget(parent) {
     input_->setPlaceholderText("Ask in plain words: why did the fan scream last night?");
     input_->setFixedHeight(38);
     goBtn_ = new QPushButton("Ask");
+    // Two buttons once there is an answer: a follow-up keeps that answer in force (its subject for "it", its moment for
+    // "after that"), a new question forgets it. The person chooses; nothing guesses.
+    followBtn_ = new QPushButton("Follow up");
+    followBtn_->hide();
     bar->addWidget(input_, 1);
+    bar->addWidget(followBtn_);
     bar->addWidget(goBtn_);
     v->addLayout(bar);
 
@@ -82,7 +87,8 @@ AskPage::AskPage(QWidget* parent) : QWidget(parent) {
                            "records it did find shown underneath every answer it gives."));
 
     connect(goBtn_, &QPushButton::clicked, this, &AskPage::go);
-    connect(input_, &QLineEdit::returnPressed, this, &AskPage::go);
+    connect(followBtn_, &QPushButton::clicked, this, &AskPage::followUp);
+    connect(input_, &QLineEdit::returnPressed, this, [this] { answered_ ? followUp() : go(); });
 
     if (qEnvironmentVariableIsSet("AS_ASK")) input_->setText(qEnvironmentVariable("AS_ASK"));
 }
@@ -91,7 +97,11 @@ AskPage::~AskPage() {
     if (worker_) worker_->wait();
 }
 
-void AskPage::go() {
+void AskPage::go() { run(as::Ask::Mode::Fresh); }
+
+void AskPage::followUp() { run(as::Ask::Mode::FollowUp); }
+
+void AskPage::run(as::Ask::Mode mode) {
     const QString q = input_->text().trimmed();
     if (q.isEmpty() || worker_) return;
     if (!ask_) {
@@ -127,18 +137,27 @@ void AskPage::go() {
     }
     // The check can take a few seconds: the question is answered on a worker thread.
     goBtn_->setEnabled(false);
+    followBtn_->setEnabled(false);
     input_->setEnabled(false);
     const std::string question = q.toStdString();
     const int64_t now = QDateTime::currentSecsSinceEpoch();
     auto result = std::make_shared<as::AskResult>();
-    worker_ = QThread::create([this, question, now, result] { *result = ask_->ask(question, now); });
+    worker_ = QThread::create([this, question, now, result, mode] { *result = ask_->ask(question, now, mode); });
     connect(worker_, &QThread::finished, this, [this, result] {
         worker_->deleteLater();
         worker_ = nullptr;
         goBtn_->setEnabled(true);
+        followBtn_->setEnabled(true);
         input_->setEnabled(true);
+        input_->clear();
         input_->setFocus();
         show_result(*result);
+        if (!answered_) {
+            answered_ = true;
+            goBtn_->setText("New question");
+            followBtn_->show();
+            input_->setPlaceholderText("Follow up on that (Enter), or ask something new");
+        }
     });
     worker_->start();
 }

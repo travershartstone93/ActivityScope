@@ -788,11 +788,12 @@ void Ask::load_conversation(const std::string& followups_path, const std::string
     speller_ready_ = true;
 }
 
-AskResult Ask::ask_once(const std::string& question, int64_t now, const std::string& force_kind) {
+AskResult Ask::ask_once(const std::string& question, int64_t now, const std::string& force_kind, Mode mode) {
     AskResult res;
     remember_ = fresh_ = false;
     when_now = now;
     question_ = question;
+    if (mode == Mode::Fresh) dialogue_.reset();  // a new question: nothing earlier is in force
     if (!db_) {
         res.body = "I can't answer that: the history database is not open.";
         res.refused = true;
@@ -810,6 +811,45 @@ AskResult Ask::ask_once(const std::string& question, int64_t now, const std::str
     // phrasing; it leads the reading's intents. "none" leaves the reading as the
     // word lists made it, so the usual clarify and refusal paths still apply.
     unllm::Reading reading = turn.reading;
+    // A follow-up the person marked as one, asked as a full question: the last answer is in force. "It", "that" and
+    // "this" are what it named (whatever the topic; the analyzer leaves a pronoun unbound in a question about the
+    // machine or about trust); "after that", "since then" and "before that" are spans from or to its moment; a question
+    // naming no time keeps its time.
+    if (mode == Mode::FollowUp && turn.kind == unllm::Turn::Fresh && dialogue_.last() && !dialogue_.last()->refused) {
+        const unllm::Card& prev = *dialogue_.last();
+        bool has_program = false;
+        for (const auto& e : reading.entities) has_program |= e.type == "program";
+        bool pronoun = false, anchored = false;
+        for (std::size_t i = 0; i < raw_tokens.size(); ++i) {
+            const std::string& w = raw_tokens[i].lower;
+            pronoun |= w == "it" || w == "that" || w == "this";
+            const std::string next = i + 1 < raw_tokens.size() ? raw_tokens[i + 1].lower : "";
+            const bool at_then = next == "that" || next == "then" || next == "it" || next == "this";
+            if ((w == "after" || w == "since" || w == "before") && at_then && prev.moment > 0) {
+                reading.window.from = w == "before" ? (prev.window.stated && prev.window.from < prev.moment ? prev.window.from : prev.moment - 86400) : prev.moment;
+                reading.window.to = w == "before" ? prev.moment : now;
+                reading.window.stated = true;
+                reading.window.live = reading.window.present = false;
+                reading.event_clause.clear();
+                reading.event_after = reading.event_at = reading.event_during = false;
+                anchored = true;
+            }
+        }
+        if (!has_program && pronoun) {
+            std::string subject = prev.subjects_named.empty() ? prev.subject : prev.subjects_named[0];
+            auto known = subject.empty() ? std::vector<Row>{} : query(db_, "SELECT COUNT(*) FROM procs WHERE name = ?1", {}, {subject});
+            if (!known.empty() && known[0].t > 0) reading.entities.push_back({"program", subject});
+        }
+        if (!anchored && !reading.window.stated && !reading.window.live && !reading.window.present && prev.window.stated) reading.window = prev.window;
+    }
+    // Never a span after now ("after that" with nothing to anchor it): the last day instead, said in the trace.
+    bool future_fixed = false;
+    if (!reading.window.live && !reading.window.present && reading.window.from >= now) {
+        reading.window.from = now - 86400;
+        reading.window.to = now;
+        reading.window.stated = false;
+        future_fixed = true;
+    }
     const QuestionKind* unanswered = nullptr;  // the nearest kind is one ask has no records for
     std::string space_kind;                    // a free-disk-space question, answered by answer_space
     float kind_score = 1;                      // how near the question is to that kind's nearest phrasing
@@ -1318,6 +1358,7 @@ AskResult Ask::ask_once(const std::string& question, int64_t now, const std::str
         res.read_back = true;
     }
     for (const auto& [typed, meant] : spelling) res.receipts.push_back("spelling: " + typed + " -> " + meant);
+    if (future_fixed) res.receipts.push_back("window: a span after now was replaced by the last day");
     if (fresh && !reading.event_clause.empty())
         res.receipts.push_back(event_at_ ? "event: " + event_what_ + " (" + when_text(event_at_) + ")"
                                          : "event: nothing in the records matches \"" + reading.event_clause + "\" in that window");
@@ -1667,7 +1708,7 @@ std::optional<Ask::Verdict> Ask::check_answer(const std::string& question, const
     return v;
 }
 
-AskResult Ask::ask(const std::string& question, int64_t now) {
+AskResult Ask::ask(const std::string& question, int64_t now, Mode mode) {
     // "what's the battery health and how fast is it draining": two questions about now in one line, each close to a kind of
     // its own and told by a handler of its own, get both answers in turn. Anything else is one question.
     if (forced_.empty() && kinds_.ready()) {
@@ -1684,10 +1725,10 @@ AskResult Ask::ask(const std::string& question, int64_t now) {
             const QuestionKind* kb = kinds_.find(b.id);
             if (ka && kb && a.id != b.id && a.score >= kinds_.cutoff("two_questions", 0.85f) && b.score >= kinds_.cutoff("two_questions", 0.85f) && ka->window != "window" && kb->window != "window" &&
                 ka->topic != "none" && kb->topic != "none") {
-                AskResult one = ask_once(first, now, "");
+                AskResult one = ask_once(first, now, "", mode);
                 unllm::Card card_one = card_;
                 const bool keep_one = remember_;
-                AskResult two = ask_once(second, now, "");
+                AskResult two = ask_once(second, now, "", mode);
                 if (one.when == "now" && two.when == "now" && !one.refused && !two.refused && one.branch != two.branch) {
                     one.answer = compose_answer(one);
                     two.answer = compose_answer(two);
@@ -1714,7 +1755,7 @@ AskResult Ask::ask(const std::string& question, int64_t now) {
             }
         }
     }
-    AskResult res = ask_once(question, now, forced_);
+    AskResult res = ask_once(question, now, forced_, mode);
     // The final check: only a new question with an answer from the records, not banter,
     // a follow-up or a request to clarify.
     if (checker_.enabled() && forced_.empty() && remember_ && fresh_ && !card_.clarify && !match_.id.empty() &&
@@ -1737,7 +1778,7 @@ AskResult Ask::ask(const std::string& question, int64_t now) {
                 const unllm::TimeWindow first_window = window_;
                 const std::vector<std::string> first_programs = programs_;
                 const std::string other = others[std::size_t(pick)];
-                AskResult again = ask_once(question, now, other);
+                AskResult again = ask_once(question, now, other, mode);
                 auto v2 = remember_ ? check_answer(question, other, again, {}) : std::nullopt;
                 if (v2 && v2->answers == "yes") {
                     again.check = "kind " + kind + " -> " + other + " (" + v->why + ")";
@@ -2721,7 +2762,9 @@ AskResult Ask::answer_reading(const unllm::Reading& r, const std::vector<unllm::
                 clauses.push_back({{procs[0].name, true}, "hold", "the most, " + human_bytes(double(procs[0].rss)) +
                                                                   (next.empty() ? "" : ", then " + unllm::join_list(next)), Tense::Present});
                 card_.subject = procs[0].name;
-                card_.subjects_named = {procs[0].name};
+                card_.subjects_named.clear();
+                for (std::size_t i = 0; i < procs.size() && i < 3; ++i)
+                    if (procs[i].rss > 0) card_.subjects_named.push_back(procs[i].name);  // "which one": these, in order
                 card_.metric = "memory";
                 card_.value = double(procs[0].rss);
             }
@@ -6486,6 +6529,22 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
         const std::string of = program.empty() ? "" : " of " + program;
         for (auto it = found.rbegin(); it != found.rend() && res.receipts.size() < 6; ++it) res.receipts.push_back(when_text(it->t) + "  " + it->text);
         res.branch = "records:crashes";
+        // The kernel's note on a crash at t: "kernel: movie[2409161]: segfault at 14 ip ... in libprotobuf-lite.so.36.1.0[ce4ef,...]"
+        // read as the fault and the library it happened in.
+        auto fault_note = [&](int64_t t) -> std::string {
+            auto detail = query(db_, "SELECT t, 0, 0, detail FROM log WHERE category = 'problems' AND t >= ?1 AND t <= ?2 AND detail != '' ORDER BY t DESC LIMIT 1",
+                                {t - 2, t + 2});
+            if (detail.empty()) return "";
+            const std::string& d = detail[0].s1;
+            const std::string fault = d.find("segfault") != std::string::npos ? "a segfault" : d.find("general protection") != std::string::npos ? "a protection fault" : "";
+            if (fault.empty()) return "";
+            std::string lib;
+            if (const auto at = d.find(" in "); at != std::string::npos) {
+                lib = d.substr(at + 4, d.find_first_of("[ ", at + 4) - at - 4);
+                if (lib.find('.') == std::string::npos) lib.clear();
+            }
+            return " (" + fault + (lib.empty() ? "" : " in " + lib) + ")";
+        };
         // A named program with nothing in the window: its last crash on record, with the kernel's note on it, else that it
         // has never crashed on record and when it last ran, so a why gets what there is.
         auto history = [&]() -> std::string {
@@ -6495,21 +6554,7 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
                 if (about(m) && m.unit.empty()) ever.push_back(m);
             if (!ever.empty()) {
                 const Mishap& m = ever.back();
-                std::string note;
-                auto detail = query(db_, "SELECT t, 0, 0, detail FROM log WHERE category = 'problems' AND t >= ?1 AND t <= ?2 AND detail != '' ORDER BY t DESC LIMIT 1",
-                                    {m.t - 2, m.t + 2});
-                if (!detail.empty()) {
-                    // "kernel: movie[2409161]: segfault at 14 ip ... in libprotobuf-lite.so.36.1.0[ce4ef,...]": the fault and the library.
-                    const std::string& d = detail[0].s1;
-                    const std::string fault = d.find("segfault") != std::string::npos ? "a segfault" : d.find("general protection") != std::string::npos ? "a protection fault" : "";
-                    std::string lib;
-                    if (const auto at = d.find(" in "); at != std::string::npos) {
-                        lib = d.substr(at + 4, d.find_first_of("[ ", at + 4) - at - 4);
-                        if (lib.find('.') == std::string::npos) lib.clear();
-                    }
-                    if (!fault.empty()) note = " (" + fault + (lib.empty() ? "" : " in " + lib) + ")";
-                }
-                return " Its last crash on record was " + moment_text(m.t) + note + aftermath(m) + ".";
+                return " Its last crash on record was " + moment_text(m.t) + fault_note(m.t) + aftermath(m) + ".";
             }
             auto first = query(db_, "SELECT CAST(MIN(t) AS INTEGER) FROM log", {});
             return " None is on record at all" + (first.empty() || first[0].t <= 0 ? std::string() : ", back to " + moment_text(first[0].t)) + "." +
@@ -6518,6 +6563,10 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
         if (found.empty()) {
             if (polar) settle(res, r, false);
             res.body = "No crash or failed unit" + of + " was recorded " + where + "." + history();
+            if (!program.empty()) {
+                card_.subject = program;  // "why" and "when" after it still mean this program
+                card_.subjects_named = {program};
+            }
             return res;
         }
         card_.moment = found.back().t;
@@ -6562,7 +6611,9 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
             std::vector<std::string> out;
             const std::size_t skip = v.size() > 5 ? v.size() - 5 : 0;  // a named program's latest five
             if (skip) out.push_back(std::to_string(skip) + " earlier");
-            for (std::size_t i = skip; i < v.size(); ++i) out.push_back((times_only ? "" : v[i].text + " at ") + when_text(v[i].t) + aftermath(v[i]));
+            // A named program's own crashes carry the kernel's note each ("Sun 14:34 (a segfault in libQt6Core.so.6)").
+            for (std::size_t i = skip; i < v.size(); ++i)
+                out.push_back((times_only ? "" : v[i].text + " at ") + when_text(v[i].t) + (times_only && v[i].unit.empty() ? fault_note(v[i].t) : "") + aftermath(v[i]));
             return unllm::join_list(out);
         };
         std::string text;
@@ -6923,6 +6974,13 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
             if (polar) settle(res, r, false);
             res.body = capital((login ? "you didn't " + std::string(s.base) : std::string(charger ? "the charger wasn't " : "the lid wasn't ") + s.verb) + " " +
                                where + ".");
+            // No log-in in the window because the session never ended: since when it has been open.
+            if (login)
+                for (std::size_t i = marks.size(); i-- > 0;)
+                    if (marks[i].side == side && marks[i].t < from) {
+                        if (!back(i)) res.body += " You have been logged in since " + moment_text(marks[i].t) + ".";
+                        break;
+                    }
             return res;
         }
         if (latest) {
@@ -7257,7 +7315,7 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
             res.branch = "records:boots-none";
             return res;
         }
-        auto at = [&](int64_t x) { return now - x < 6 * 86400 ? when_text(x) : local_date(x) + " " + when_text(x).substr(4); };
+        auto at = [&](int64_t x) { return now - x < 6 * 86400 ? when_text(x) : moment_text(x); };
         for (std::size_t i = b.size() > 6 ? b.size() - 6 : 0; i < b.size(); ++i) res.receipts.push_back("boot " + at(b[i]));
         std::vector<std::string> in;
         int64_t up = 0;  // the boot the machine was running on when the window began
@@ -7723,14 +7781,17 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
         std::string out = run_out("plocate -i -b -l 12 -- " + quote(name) + " 2>/dev/null");
         const bool indexed = !out.empty();
         bool cut_short = false;  // the walk ran out of time (a busy machine, a huge tree)
-        if (out.empty()) {
-            // -I: files a project's .gitignore lists (a build folder) are files all the same.
-            out = run_out("timeout 25 fd -F -i -H -I --max-results 12 --exclude .cache --exclude .git -- " + quote(name) + " " + quote(home) +
-                          " 2>/dev/null; echo \"__exit=$?\"");
-            if (const auto at = out.rfind("__exit="); at != std::string::npos) {
-                cut_short = out.compare(at + 7, 3, "124") == 0;
-                out.erase(at);
+        // The index may leave the home folder out (here it gave /etc/bash.bashrc for "bashrc" and never ~/.bashrc), so
+        // home is walked whenever the index found nothing in it. -I: files a project's .gitignore lists (a build folder)
+        // are files all the same.
+        if (out.find(home + "/") == std::string::npos) {
+            std::string walked = run_out("timeout 25 fd -F -i -H -I --max-results 12 --exclude .cache --exclude .git -- " + quote(name) + " " + quote(home) +
+                                         " 2>/dev/null; echo \"__exit=$?\"");
+            if (const auto at = walked.rfind("__exit="); at != std::string::npos) {
+                cut_short = walked.compare(at + 7, 3, "124") == 0;
+                walked.erase(at);
             }
+            out = walked + out;
         }
         struct Hit {
             std::string path;
@@ -9351,6 +9412,18 @@ AskResult Ask::follow_up(unllm::Act act, const unllm::Card& card, int64_t now) {
 
     switch (act) {
     case Act::Why: {
+        // "Why" after a crash answer asks what the crash was: the crash records with the kernel's note on each, for the
+        // program the answer named, over the same time.
+        if (card.branch == "records:crashes" || card.topic == Intent::Crash) {
+            unllm::Reading rr = card.reading;
+            rr.wants = unllm::Wants::Cause;
+            rr.form = Form::Open;
+            rr.domain = 1.0;
+            bool has_prog = false;
+            for (const auto& e : rr.entities) has_prog |= e.type == "program";
+            if (!has_prog && is_program(card.subject)) rr.entities.push_back({"program", card.subject});
+            return answer_records("crashes.cause.window", rr, now);
+        }
         // A rule that fired on the very event is the best "why".
         if (card.event_id) {
             Diagnose diag(db_);
@@ -9469,6 +9542,15 @@ AskResult Ask::follow_up(unllm::Act act, const unllm::Card& card, int64_t now) {
         return rerun(rr);
     }
     case Act::Which: {
+        // What the answer itself named, in its order ("haruna holds the most, then clangd.main and claude": haruna).
+        if (!card.subjects_named.empty()) {
+            std::vector<std::string> rest(card.subjects_named.begin() + 1, card.subjects_named.end());
+            if (rest.size() > 2) rest.resize(2);
+            res.body = "That was " + card.subjects_named[0] +
+                       (card.metric == "memory" && !std::isnan(card.value) ? ", with " + human_bytes(card.value) : "") +
+                       (rest.empty() ? "" : ", then " + unllm::join_list(rest)) + ".";
+            return res;
+        }
         unsigned mask = mask_of(card.topic);
         if (mask) {
             auto rows = query(db_, "SELECT 0, SUM(c.share * IFNULL(e.total_cpu_seconds, 1)), COUNT(*), c.name "

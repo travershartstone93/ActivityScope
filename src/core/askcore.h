@@ -109,7 +109,13 @@ public:
     const std::vector<NameMatch>& named() const { return named_; }
     // Tests: live readings come from these /proc and /sys trees.
     void set_roots(const Roots& roots);
-    AskResult ask(const std::string& question, int64_t now);
+    // How the turn relates to the conversation. Auto lets the dialogue decide (a bare "why?" is a follow-up, a full
+    // question stands alone). Fresh forgets the conversation first. FollowUp keeps the last answer in force: its subject
+    // for "it" and "that", its moment for "after that" and "before that", its time when the question names none, and the
+    // bare follow-ups ("which one", "why") read what it named. The terminal and the Ask page pass the mode the person
+    // chose, so nothing has to guess whether a line is new.
+    enum class Mode { Auto, Fresh, FollowUp };
+    AskResult ask(const std::string& question, int64_t now, Mode mode = Mode::Auto);
     // The final check: a small local model (Ollama, "qwen3:4b") reads the question, how ask read
     // it and the answer, and says whether the answer fits and which of the closest readings fits
     // best. It never writes the answer: another reading is answered by ask's own code, and an
@@ -123,7 +129,7 @@ public:
 private:
     // One pass: the question read and answered, nothing remembered; force_kind answers it as that
     // catalogue kind. remember_ says whether the turn belongs in the conversation.
-    AskResult ask_once(const std::string& question, int64_t now, const std::string& force_kind);
+    AskResult ask_once(const std::string& question, int64_t now, const std::string& force_kind, Mode mode = Mode::Auto);
     // The model's verdict on one answer: "yes", "partly" or "no", and the letter of the reading
     // that fits best ("A" is ask's own). Nothing when the model is unreachable.
     struct Verdict {

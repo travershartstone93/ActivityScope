@@ -100,7 +100,8 @@ int main(int argc, char** argv) {
                   "  ask why did the fan scream last night\n"
                   "  ask what crashed yesterday\n"
                   "  ask                      (no question: a conversation; follow-ups work)\n"
-                  "  ask --script FILE        replay a conversation, one question per line\n"
+                  "  ask --script FILE        replay a conversation, one question per line (\"+ \" in front of a\n"
+                  "                           line follows up the answer before it, \"! \" starts a new question)\n"
                   "  ask --now EPOCH ...      answer as if the clock read EPOCH (tests)\n"
                   "  ask --branch ...         also print which handler answered\n"
                   "  ask --trace ...          --branch plus the time read and the nearest kinds\n"
@@ -161,8 +162,8 @@ int main(int argc, char** argv) {
     ask.set_checker(check ? check : "off");
     ask.force_reading(force_kind);
     ask.offer_reading(offer_kind);
-    auto answer = [&](const std::string& q) {
-        as::AskResult r = ask.ask(q, now());
+    auto answer = [&](const std::string& q, as::Ask::Mode mode = as::Ask::Mode::Auto) {
+        as::AskResult r = ask.ask(q, now(), mode);
         std::printf("%s\n", r.answer.c_str());
         if (show_branch) std::printf("[branch: %s]\n", r.branch.empty() ? "-" : r.branch.c_str());
         if (show_branch) std::printf("[topic: %s %s]\n", r.topic.empty() ? "-" : r.topic.c_str(), r.when.c_str());
@@ -201,11 +202,16 @@ int main(int argc, char** argv) {
             std::printf("ask: cannot read %s\n", script.c_str());
             return 1;
         }
+        // A line starting with "+ " follows up the answer before it; one starting with "! " is a new question; a plain
+        // line is read as the dialogue judges it (the older replays).
         std::string line;
         while (std::getline(f, line)) {
             if (line.empty() || line[0] == '#') continue;
-            std::printf("> %s\n", line.c_str());
-            answer(line);
+            as::Ask::Mode mode = as::Ask::Mode::Auto;
+            if (line.rfind("+ ", 0) == 0) mode = as::Ask::Mode::FollowUp, line.erase(0, 2);
+            else if (line.rfind("! ", 0) == 0) mode = as::Ask::Mode::Fresh, line.erase(0, 2);
+            std::printf("%s %s\n", mode == as::Ask::Mode::FollowUp ? "+>" : ">", line.c_str());
+            answer(line, mode);
             std::printf("---\n");
         }
         return 0;
@@ -216,17 +222,31 @@ int main(int argc, char** argv) {
     }
     // No question: a conversation. One Ask instance holds the thread, so
     // "and firefox?" or "how many times?" patch the previous question.
+    // After an answer the prompt takes a follow-up to it; "/new", alone or in front of a question, starts a new question
+    // with nothing earlier in force. The prompt always says which, so nothing guesses whether a line is new.
     const bool tty = isatty(0);
-    if (tty) std::puts("ask: a conversation with the records. Blank line or quit ends it.");
+    if (tty) std::puts("ask: a conversation with the records. After an answer, what you type follows it up; /new starts a new question. Blank line or quit ends it.");
     std::string line;
+    bool answered = false, fresh_next = true;
     while (true) {
         if (tty) {
-            std::printf("> ");
+            std::printf(answered && !fresh_next ? "follow up > " : "new question > ");
             std::fflush(stdout);
         }
         if (!std::getline(std::cin, line)) break;
         if (line.empty() || line == "quit" || line == "exit") break;
-        answer(line);
+        if (line == "/new") {
+            fresh_next = true;
+            continue;
+        }
+        as::Ask::Mode mode = answered && !fresh_next ? as::Ask::Mode::FollowUp : as::Ask::Mode::Fresh;
+        if (line.rfind("/new ", 0) == 0) {
+            line.erase(0, 5);
+            mode = as::Ask::Mode::Fresh;
+        }
+        answer(line, mode);
+        answered = true;
+        fresh_next = false;
         if (tty) std::printf("\n");
     }
     return 0;

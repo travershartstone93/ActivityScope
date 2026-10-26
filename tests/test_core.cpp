@@ -5083,6 +5083,7 @@ void test_must_nail() {
         st.add_procs({b, k});
         st.add_log({{now - 3 * 86400 + 600, "problems", "kodi crashed",
                      "kernel: kodi[3999998]: segfault at 14 ip 00007f051adae4ef sp 00007ffe8c1d1f20 error 4 in libkodi.so.21[ce4ef,7f051ad07000+c6000] likely on CPU 1"}});
+        st.add_log({{now - 3 * 86400 + 100, "software", "upgraded 281 packages", ""}});
     }
     char exe[4096];
     const ssize_t len = readlink("/proc/self/exe", exe, sizeof exe - 1);
@@ -5175,6 +5176,37 @@ void test_must_nail() {
     {
         const as::AskResult r = ask("what is the largest file on disk");
         CHECK(r.branch == "space:which" && r.answer.rfind("The largest single file is", 0) == 0 && has(r, "In your home folder"));
+    }
+    // Explicit turns in one conversation: a follow-up keeps the last answer in force, a new question forgets it.
+    {
+        as::Ask a;
+        CHECK(a.open(dbp));
+        a.load_language("vendor/unllm/data/synonyms.txt", "vendor/unllm/data/vectors.bin", "vendor/unllm/data/banter.txt",
+                        "vendor/unllm/data/rewrites.txt");
+        a.load_conversation("vendor/unllm/data/followups.txt", "vendor/unllm/data/chatspeak.txt");
+        CHECK(a.load_kinds("data/kinds", cache, model_dir));
+        auto turn = [&](const std::string& q, as::Ask::Mode m) {
+            const as::AskResult r = a.ask(q, int64_t(now), m);
+            std::printf("  [%s] %s%s -> %s\n", r.branch.c_str(), m == as::Ask::Mode::FollowUp ? "+ " : "", q.c_str(), r.answer.substr(0, 200).c_str());
+            return r;
+        };
+        // "Which one" names what the memory answer named, with its figure.
+        turn("is anything hogging the ram", as::Ask::Mode::Fresh);
+        const as::AskResult which = turn("which one", as::Ask::Mode::FollowUp);
+        CHECK(which.branch == "followup:which" && which.answer.rfind("That was ", 0) == 0);
+        // "That" after a process answer is that program, even in a trust question; a new question forgets it.
+        turn("explain pid 3999999", as::Ask::Mode::Fresh);
+        const as::AskResult safe = turn("is that safe", as::Ask::Mode::FollowUp);
+        CHECK(safe.branch.rfind("trust", 0) == 0 && safe.branch != "trust:which" && has(safe, "blender"));
+        CHECK(turn("is that safe", as::Ask::Mode::Fresh).branch == "trust:which");
+        // "Why" after a crash answer is the crash, with the kernel's note.
+        turn("did kodi crash on saturday", as::Ask::Mode::Fresh);
+        const as::AskResult why = turn("why", as::Ask::Mode::FollowUp);
+        CHECK(why.branch == "followup:why" && has(why, "segfault in libkodi.so.21"));
+        // "After that" is after the moment the last answer gave, never a span after now.
+        turn("did i update anything on saturday", as::Ask::Mode::Fresh);
+        const as::AskResult after = turn("did anything weird run after that", as::Ask::Mode::FollowUp);
+        CHECK(after.when == "window" && after.span.rfind("Sat 21:", 0) == 0 && !has(after, "Oct 20"));
     }
     fs::remove_all(dir);
 }

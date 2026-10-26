@@ -22,12 +22,16 @@ public:
     void refresh() {}
 
 public slots:
-    void go();
+    void go();        // a new question: nothing earlier is in force
+    void followUp();  // a follow-up to the last answer: its subject, moment and time stay in force
 
 private:
+    void run(as::Ask::Mode mode);
     void show_result(const as::AskResult& r);
     QLineEdit* input_;
     QPushButton* goBtn_;
+    QPushButton* followBtn_;   // shown once there is an answer to follow up
+    bool answered_ = false;    // Enter follows up once there is an answer; before that it asks
     QLabel* answer_;
     QVBoxLayout* receipts_;
     std::unique_ptr<as::Ask> ask_;
