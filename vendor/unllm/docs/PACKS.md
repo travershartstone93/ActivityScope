@@ -242,3 +242,30 @@ behaviour.
 `unllm --rewrite` runs the rewrite alone for measuring: three lines on stdin
 (previous question, its answer, the new question), JSON out.
 `bench/rewrite50.py` scores it on QReCC turns against the set's gold rewrites.
+
+## Keeping packs current
+
+`unllm update --check` asks each source's server whether newer data exists
+than the packs were built from, and downloads nothing: a few small requests
+over IPv4. It prints one block per source, what is installed (the pack's
+version and build day, the fetch day while the download folder is still
+there) against what is available, marked `ok`, `NEWER` or `?` when the
+server could not be reached. `--json` gives the same as one object. The exit
+code is 0 when everything is current, 1 when something newer exists, 2 when a
+source could not be reached.
+
+How each source is judged:
+
+- Wikipedia (FineWiki): the checksum Hugging Face publishes for every data
+  file against the checksums the download script verified. That list is
+  copied into `~/.local/share/unllm/update/` on the first check, so the
+  downloads can be deleted afterwards and the comparison still works.
+- StackExchange: each site dump's date, size and checksum on archive.org,
+  against the file fetched (while it is here) and the fetch day.
+- Wiktionary: the file's date and size on kaikki.org against the fetch day.
+- WordNet: the latest release's edition on GitHub.
+- Gutenberg poetry: a fixed file; it never changes.
+
+The update itself (fetch only what changed, rebuild those packs beside the
+old ones, re-embed their passages, check the new set against the verified
+questions, swap, keep the old set a week) is not built yet.
