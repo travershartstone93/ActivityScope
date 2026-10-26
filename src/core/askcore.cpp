@@ -4186,10 +4186,15 @@ AskResult Ask::answer_reading(const unllm::Reading& r, const std::vector<unllm::
                 }
                 if (!cur.empty()) paras.push_back(cur);
             }
-            std::string verdict, origin;
+            std::string verdict, origin, signs;
             for (std::size_t i = 0; i < paras.size(); ++i) {
                 if (i == 0 && paras[i].find("(pid " + pid_s + ")") != std::string::npos) verdict = paras[i];
-                if (paras[i] == "Where it came from" && i + 1 < paras.size()) origin = paras[i + 1];
+                // A heading and its text share a paragraph ("Where it came from It comes from the ... package").
+                if (const char* head = "Where it came from"; paras[i].rfind(head, 0) == 0) origin = trim(paras[i].substr(std::strlen(head)));
+                if (const char* head = "Warning signs"; paras[i].rfind(head, 0) == 0) {
+                    signs = trim(paras[i].substr(std::strlen(head)));
+                    for (std::size_t at; (at = signs.find("- ")) != std::string::npos;) signs.erase(at, 2);  // the bullets
+                }
             }
             if (verdict.empty()) {
                 auto rec = query(db_, "SELECT CAST(started AS INTEGER), IFNULL(ended, 0), 0, name, cmdline FROM procs WHERE pid = ?1 ORDER BY started DESC LIMIT 1",
@@ -4199,7 +4204,7 @@ AskResult Ask::answer_reading(const unllm::Reading& r, const std::vector<unllm::
                                         : " The records show pid " + pid_s + " was " + rec[0].s1 + ", which ran " +
                                               (rec[0].a > 0 ? span_text(rec[0].t, int64_t(rec[0].a), " to ") : "from " + moment_text(rec[0].t)) + ".");
             } else {
-                res.body = verdict + (origin.empty() ? "" : " " + origin);
+                res.body = verdict + (signs.empty() ? "" : " " + signs) + (origin.empty() ? "" : " " + origin);
                 res.notes.push_back("weird rates where a program came from, not what it does.");
             }
             res.receipts.push_back("weird " + pid_s);
@@ -7819,8 +7824,7 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
                        (live->unit.empty() ? "" : " in " + live->unit) +
                        (live->started_epoch > 0 ? ", running since " + moment_text(int64_t(live->started_epoch)) : "") + ". Right now it uses " +
                        fmt("%.0f%%", live->cpu) + " of the CPU and holds " + human_bytes(double(live->rss)) + " of memory" +
-                       (live->gpu_mem.ok() && live->gpu_mem.get() > 0 ? " and " + human_bytes(live->gpu_mem.get()) + " of video memory" : "") +
-                       (live->threads > 1 ? fmt(", with %d threads", live->threads) : "") + ".";
+                       (live->gpu_mem.ok() && live->gpu_mem.get() > 0 ? " and " + human_bytes(live->gpu_mem.get()) + " of video memory" : "") + ".";
             res.body += fact(live->name);
             // weird's verdict on where it came from: the first paragraph of its report.
             const std::string out = run_out("weird --offline --no-prompt " + pid_s + " 2>/dev/null");
