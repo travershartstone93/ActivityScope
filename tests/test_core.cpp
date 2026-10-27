@@ -5156,10 +5156,13 @@ void test_must_nail() {
         fs::remove(probe);
         CHECK(called.branch == "records:find" && has(called, ("zq-probe-" + pid + ".txt").c_str()));
     }
-    // A program's own file, from the records of its runs.
+    // A program's own file, from the records of its runs; a program the records know is never "outside the records",
+    // however loosely its name matches the example wordings (kodi: no example names it).
     {
         const as::AskResult r = ask("where is blender located");
         CHECK(r.branch == "records:find-program" && has(r, "blender is at /usr/bin/blender"));
+        const as::AskResult k = ask("where is kodi located");
+        CHECK(k.branch == "records:find-program" && has(k, "kodi is at /usr/bin/kodi"));
     }
     // A process number: this test's own process live, and one only the records hold.
     {

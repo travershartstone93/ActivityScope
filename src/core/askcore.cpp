@@ -911,6 +911,16 @@ AskResult Ask::ask_once(const std::string& question, int64_t now, const std::str
                                                          !(names_path && k->id == "none"))
             unanswered = k;
         if (names_path) reading.domain = std::max(reading.domain, 0.8);  // a path on this machine: understood
+        // A program the records know ("where is kwrite located": kwrite has run here) is about this machine too, however
+        // loosely its wording matches an example: understood, and never "outside the records".
+        bool names_program = false;
+        for (const auto& e : reading.entities)
+            if (e.type == "program") {
+                std::string low = e.value;
+                for (auto& c : low) c = char(std::tolower(static_cast<unsigned char>(c)));
+                names_program |= program_words_.count(low) > 0;
+            }
+        if (names_program) reading.domain = std::max(reading.domain, 0.8);
         kind_ = km.id;
         if (force_kind.empty()) match_ = km;
         readings.push_back(km.id);
@@ -946,7 +956,8 @@ AskResult Ask::ask_once(const std::string& question, int64_t now, const std::str
             // Nothing fits: no phrasing near (under 0.80, the understanding line), the topic below the score where right
             // answers were rare (0.795 on the same questions, 1 of 88), and no topic read by the analyzer either. Then a
             // near miss is not given as the answer.
-            unplaced = doubted && own.empty() && km.score < kinds_.cutoff("understand", 0.80f) && km.topic_score(k->topic) < kinds_.cutoff("unplaced_topic", 0.795f);
+            unplaced = doubted && own.empty() && !names_program && km.score < kinds_.cutoff("understand", 0.80f) &&
+                       km.topic_score(k->topic) < kinds_.cutoff("unplaced_topic", 0.795f);
         }
         if (const QuestionKind* k = kinds_.find(km.id); k && k->topic != "none" && !what_is) {
             if (auto it = by_name.find(k->topic); it != by_name.end()) {
