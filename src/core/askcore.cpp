@@ -1062,6 +1062,23 @@ AskResult Ask::ask_once(const std::string& question, int64_t now, const std::str
             if (const QuestionKind* k0 = kinds_.find(kind_))
                 slot |= k0->topic == "crashes" || k0->topic == "trust" || k0->topic == "programs" || k0->id.find(".process") != std::string::npos ||
                         k0->id == "disk.find.which.now";
+            // For the other topics (the CPU, memory, the GPU): only when a sister example of the same kind has its
+            // program where the question has its unknown word ("why is firefox making everything slow" against "why
+            // is zork slow"); a world question ("what does undefined reference to main mean") has no such sister.
+            if (!slot && unknown.size() == 1) {
+                std::size_t at = raw_tokens.size();
+                for (std::size_t i = 0; i < raw_tokens.size(); ++i)
+                    if (raw_tokens[i].norm == unknown[0] || raw_tokens[i].lower == unknown[0]) at = i;
+                std::vector<std::string> sisters{match_.phrasing};
+                for (std::size_t i = 0; i < match_.runners.size() && i < match_.runner_phrasings.size() && i < 5; ++i)
+                    if (match_.runners[i].first == kind_ && !match_.runner_phrasings[i].empty()) sisters.push_back(match_.runner_phrasings[i]);
+                for (const auto& ph : sisters) {
+                    if (slot) break;
+                    const auto toks = unllm::tokenize(ph);
+                    for (const auto& e : an_.read(ph, now).entities)
+                        if (e.type == "program" && at < toks.size() && toks[at].lower == e.value) slot = true;
+                }
+            }
             if (slot && unknown.size() == 1) {
                 reading.entities.push_back({"program", as_typed(unknown[0])});
                 named = true;
