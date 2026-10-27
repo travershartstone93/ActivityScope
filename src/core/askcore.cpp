@@ -1055,8 +1055,13 @@ AskResult Ask::ask_once(const std::string& question, int64_t now, const std::str
                 if (named) break;
             }
         if (!named && !match_.phrasing.empty()) {
+            // The question has a program's place in it: its nearest example names one, or its kind is of a topic whose
+            // answers take a program (a crash, a launch, trust, a process's load or memory, a file's place).
             bool slot = false;
             for (const auto& e : an_.read(match_.phrasing, now).entities) slot |= e.type == "program";
+            if (const QuestionKind* k0 = kinds_.find(kind_))
+                slot |= k0->topic == "crashes" || k0->topic == "trust" || k0->topic == "programs" || k0->id.find(".process") != std::string::npos ||
+                        k0->id == "disk.find.which.now";
             if (slot && unknown.size() == 1) {
                 reading.entities.push_back({"program", as_typed(unknown[0])});
                 named = true;
@@ -4365,6 +4370,15 @@ AskResult Ask::answer_reading(const unllm::Reading& r, const std::vector<unllm::
             res.receipts.push_back("weird " + pid_s);
             res.branch = "trust:pid";
             return res;
+        }
+        // A program named that is nowhere: not on record, not on the PATH. Nothing to check, and said so.
+        if (target.empty() && !program.empty() && !never_ran) {
+            auto ran = query(db_, "SELECT COUNT(*) FROM procs WHERE is_program(?1, name, exe, cmdline)", {}, {program});
+            if (ran.empty() || ran[0].t == 0) {
+                res.body = program + " hasn't run on this machine as far as the records go, and nothing by that name is installed, so there is nothing to check.";
+                res.branch = "trust:nowhere";
+                return res;
+            }
         }
         // "is this program safe" with nothing named: ask which, rather than scanning everything.
         if (target.empty() && program.empty() && kind_ == "trust.identity") {
@@ -7885,7 +7899,11 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
                 }
             }
         }
-        if (!program.empty() && (name.empty() || name == program)) {
+        // A file name ("zq-probe.txt") taken for a program by the one-unknown-word rule stays a file unless the records
+        // know a program by exactly that name ("where is heatwatch.sh located").
+        std::string low_program = program;
+        for (auto& c : low_program) c = char(std::tolower(static_cast<unsigned char>(c)));
+        if (!program.empty() && (name.empty() || (name == program && program_words_.count(low_program)))) {
             // "where is firefox located": the program's own file, from the records of its runs, else the PATH.
             namespace fs = std::filesystem;
             auto rows = query(db_, "SELECT 0, 0, 0, exe FROM procs WHERE exe != '' AND is_program(?1, name, exe, cmdline) ORDER BY started DESC LIMIT 1", {}, {program});

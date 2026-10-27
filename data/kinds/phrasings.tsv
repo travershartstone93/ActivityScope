@@ -6635,3 +6635,17 @@ slow.when.window.process	when did firefox last run
 slow.when.window.process	when was kwrite last running
 slow.when.window.process	last time blender ran
 slow.when.window.process	when did steam last start
+memory.value.now.process	how much memory is firefox using
+memory.value.now.process	how much ram does chrome use right now
+memory.value.now.process	what's firefox's memory use
+memory.value.now.process	how much memory is ollama taking
+memory.value.now.process	memory used by blender at the moment
+memory.value.now.process	how big is steam in memory
+memory.value.now.process	how much ram is kwrite holding
+memory.value.now.process	what is claude's memory footprint right now
+slow.value.now.process	is firefox running
+slow.value.now.process	is ollama running right now
+slow.value.now.process	is steam running
+slow.value.now.process	is kwrite running at the moment
+slow.value.now.process	is blender running
+slow.value.now.process	is there a firefox process running
