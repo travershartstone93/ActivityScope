@@ -6611,3 +6611,27 @@ disk.find.which.now	what is the location of the file called notes.txt
 disk.find.which.now	find the file named budget.xlsx
 disk.find.which.now	where is the file named aeon flux
 disk.find.which.now	location of the folder called projects
+disk.space.which.now	show me the largest file i have
+disk.space.which.now	biggest file on this laptop
+disk.space.which.now	whats the biggest file i have
+disk.space.which.now	which file is the largest on my computer
+network.which.now	why is the wifi so slow right now
+network.which.now	why is my wifi slow
+network.which.now	why is my internet so slow right now
+network.which.now	why is the connection slow at the moment
+memory.value.now	why is memory so high
+memory.value.now	why is my memory usage so high
+memory.value.now	why is ram usage high right now
+gpu.value.now.vram	why is the vram maxed
+gpu.value.now.vram	is vram maxed out
+gpu.value.now.vram	why is the video memory maxed out
+gpu.model.now	whats loaded on the gpu model wise
+gpu.model.now	what model is sitting on the gpu
+gpu.model.now	which model is loaded on the graphics card
+disk.folder.list.now	show me the downloads folder
+disk.folder.list.now	show me what is in downloads
+disk.folder.list.now	open up my downloads and tell me what's there
+slow.when.window.process	when did firefox last run
+slow.when.window.process	when was kwrite last running
+slow.when.window.process	last time blender ran
+slow.when.window.process	when did steam last start

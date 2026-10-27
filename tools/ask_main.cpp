@@ -174,6 +174,7 @@ int main(int argc, char** argv) {
             for (const auto& k : r.readings) all += (all.empty() ? "" : " ") + k;
             std::printf("[readings: %s]\n", all.c_str());
             if (!r.nearest.empty()) std::printf("[nearest: %s]\n", r.nearest.c_str());
+            if (!r.shape.empty()) std::printf("[shape: %s]\n", r.shape.c_str());
             std::string progs;
             for (const auto& p : r.programs) progs += (progs.empty() ? "" : ", ") + p;
             std::printf("[programs: %s]\n", progs.empty() ? "-" : progs.c_str());

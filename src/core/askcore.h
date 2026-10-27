@@ -60,6 +60,7 @@ struct AskResult {
     std::string span;                   // the time the reading looked at, as text, for measuring
     std::vector<std::string> readings;  // the kind answered and the next four nearest, for measuring
     std::string nearest;                // the phrasing the question was nearest to, with its score: "cpu temp (0.871)"
+    std::string shape;                  // how the grammar read the question's shape: "polar, wants time", for measuring
     std::vector<std::string> programs;  // the programs the reading named; one found from everyday words shows as
                                         // "movie player -> haruna"
 };

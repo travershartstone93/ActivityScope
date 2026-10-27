@@ -972,6 +972,10 @@ AskResult Ask::ask_once(const std::string& question, int64_t now, const std::str
                 if (km.score >= kinds_.cutoff("understand", 0.80f) && k->window == "window" && !reading.window.live &&
                     !reading.window.present_marked)
                     reading.window.present = false;
+                // And the other way: a close match on a kind about now, with no time named, is about now even when a
+                // word in it looks like the past ("why is the vram maxed": "maxed" is a state, not a past verb).
+                if (km.score >= kinds_.cutoff("understand", 0.80f) && k->window == "now" && !reading.window.stated && !reading.window.live)
+                    reading.window.present = true;
                 // The kind's answer form: a close "cause" kind is a why question, whatever the wording.
                 if (km.score >= kinds_.cutoff("understand", 0.80f) && k->form == "a cause") reading.wants = unllm::Wants::Cause;
                 // A close match on another topic outranks the words that read as "the machine itself"
@@ -1015,6 +1019,71 @@ AskResult Ask::ask_once(const std::string& question, int64_t now, const std::str
             } : std::function<std::vector<ProcessInfo>()>());
             // Words that name a unit ("the terminal": a terminal tab) name no one program in it.
             if (!named_.empty() && !named_[0].by_unit) reading.entities.push_back({"program", named_[0].program.name});
+        }
+    }
+    // A program the question names that the records never saw: an executable on the PATH by that name ("where is
+    // pavucontrol located": installed, never run). And a question shaped like one about a program (its nearest example
+    // names one: "where is firefox located", "did steam crash") with no program found and exactly one word the analyzer
+    // doesn't know takes that word as the program's name ("is zork running": never ran, nothing installed), so the
+    // answer says so instead of drifting to another subject.
+    if (fresh && reading.choices.empty()) {
+        bool named = false;
+        for (const auto& e : reading.entities) named |= e.type == "program" || e.type == "name";
+        if (!named)
+            if (const std::string found = names_.installed(q, reading, now); !found.empty()) {
+                reading.entities.push_back({"program", found.substr(found.rfind('/') + 1)});
+                named = true;
+            }
+        // A single unknown word that is an executable on the PATH, as typed ("is qv4l2 safe").
+        const auto unknown = named ? std::vector<std::string>{} : named_words(reading, kind_);
+        auto as_typed = [&](const std::string& term) {
+            for (const auto& t : raw_tokens)
+                if (t.norm == term || t.lower == term) return t.lower;
+            return term;
+        };
+        if (!named)
+            for (const auto& term : unknown) {
+                const std::string word = as_typed(term);
+                if (const char* pe = getenv("PATH"); !word.empty() && word.find('/') == std::string::npos) {
+                    std::istringstream dirs(pe ? pe : "");
+                    for (std::string dir; !named && std::getline(dirs, dir, ':');)
+                        if (!dir.empty() && access((dir + "/" + word).c_str(), X_OK) == 0) {
+                            reading.entities.push_back({"program", word});
+                            named = true;
+                        }
+                }
+                if (named) break;
+            }
+        if (!named && !match_.phrasing.empty()) {
+            bool slot = false;
+            for (const auto& e : an_.read(match_.phrasing, now).entities) slot |= e.type == "program";
+            if (slot && unknown.size() == 1) {
+                reading.entities.push_back({"program", as_typed(unknown[0])});
+                named = true;
+            }
+        }
+        if (named) {
+            bool any = false;
+            for (const auto& e : reading.entities) any |= e.type == "program";
+            if (any) {
+                reading.domain = std::max(reading.domain, 0.8);
+                unplaced = doubted = false;  // a question about a program is about this machine
+            }
+        }
+    }
+    // A hardware kind with a program named ("how much memory is unllm using" nearest "how much memory does it have")
+    // asks about that program's use of the part, now: the live program answer, not the machine's size.
+    if (fresh && !space_kind.empty() && space_kind.rfind("identity.", 0) == 0) {
+        bool has_program = false;
+        for (const auto& e : reading.entities) has_program |= e.type == "program";
+        const Intent part = space_kind == "identity.ram" ? Intent::Memory : space_kind == "identity.cpu" ? Intent::Slow
+                            : space_kind == "identity.gpu" ? Intent::Gpu : space_kind == "identity.disk" ? Intent::Disk : Intent::Story;
+        if (has_program && part != Intent::Story) {
+            space_kind.clear();
+            reading.intents.erase(std::remove(reading.intents.begin(), reading.intents.end(), part), reading.intents.end());
+            reading.intents.insert(reading.intents.begin(), part);
+            reading.intents.erase(std::remove(reading.intents.begin(), reading.intents.end(), Intent::Identity), reading.intents.end());
+            if (!reading.window.stated) reading.window.present = true;
         }
     }
     // A loose match on a kind read from the logs is understanding only when the question names something the records
@@ -1062,6 +1131,9 @@ AskResult Ask::ask_once(const std::string& question, int64_t now, const std::str
         if (reading.window.shifted) out.span += " (moved back a day)";
         out.readings = readings;
         if (!match_.id.empty()) out.nearest = match_.phrasing + fmt(" (%.3f)", match_.score);
+        out.shape = std::string(reading.form == Form::Polar ? "polar" : reading.form == Form::Count ? "count" : "open") + ", wants " +
+                    unllm::wants_name(reading.wants) + (reading.window.stated ? ", time stated" : "") + (reading.window.present ? ", present" : "") +
+                    (reading.frame == unllm::Frame::Condition ? ", condition" : "");
     };
 
     // "what cpu do i have again" with no earlier talk of it is simply a question.
@@ -1872,6 +1944,24 @@ AskResult Ask::answer_reading(const unllm::Reading& r, const std::vector<unllm::
     // last crash": a when/last question with no stated window means the most
     // recent occurrence in the whole history, not within the default day.
     const bool when_frame = r.wants == unllm::Wants::Time && !r.window.stated;
+    // "When did firefox last run": a when-form kind about a process answers from its runs before any topic's handler
+    // (the CPU topic would tell the window's busiest events instead), with the run's span, CPU time and memory.
+    std::string when_program;
+    for (const auto& e : r.entities)
+        if (e.type == "program") when_program = e.value;
+    if (when_frame && !when_program.empty())
+        if (const QuestionKind* kk = kinds_.find(kind_); kk && (kk->form == "when" || kk->form == "a time") && kk->id.find(".process") != std::string::npos) {
+            AskResult res;
+            const std::string last = last_run_text(db_, when_program, now);  // " It last ran ..." or " It hasn't run ..."
+            res.body = when_program + last.substr(last.rfind(" It ", 0) == 0 ? 3 : 0);
+            const std::vector<std::string> binds{when_program};
+            for (const auto& row : query(db_, "SELECT started,0,0,name FROM procs WHERE is_program(?, name, exe, cmdline) ORDER BY started DESC LIMIT 3", {}, binds))
+                res.receipts.push_back(when_text(row.t) + "  " + row.s1);
+            card_.subject = when_program;
+            card_.subjects_named = std::vector<std::string>{when_program};
+            res.branch = "records:last-run";
+            return res;
+        }
     std::string program;
     std::vector<std::string> search_terms = r.terms;
     for (const auto& e : r.entities)
@@ -4164,6 +4254,17 @@ AskResult Ask::answer_reading(const unllm::Reading& r, const std::vector<unllm::
             }
             if (target.empty()) target = exe;
         }
+        // A program named that never ran here but is installed ("is qv4l2 safe"): its file on the PATH is checked.
+        if (target.empty() && !program.empty() && program.find('/') == std::string::npos)
+            if (const char* pe = getenv("PATH")) {
+                std::istringstream dirs(pe);
+                for (std::string dir; target.empty() && std::getline(dirs, dir, ':');)
+                    if (!dir.empty() && access((dir + "/" + program).c_str(), X_OK) == 0) {
+                        target = dir + "/" + program;
+                        auto ran = query(db_, "SELECT COUNT(*) FROM procs WHERE is_program(?1, name, exe, cmdline)", {}, {program});
+                        never_ran = ran.empty() || ran[0].t == 0;
+                    }
+            }
         // Whether it runs now, as whom and in which unit. weird looks for the file as a running executable, so a
         // script a shell runs reads as "no process" there.
         std::string running;
