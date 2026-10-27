@@ -6597,3 +6597,17 @@ programs.list.now	count the apps that are open
 programs.list.now	how many apps are running
 programs.list.now	how many windows do i have open
 programs.list.now	number of open apps
+disk.find.which.now	where is firefox located
+disk.find.which.now	where is firefox installed
+disk.find.which.now	where does chrome live on disk
+disk.find.which.now	what folder is blender in
+disk.find.which.now	path to the firefox binary
+disk.find.which.now	where is the steam executable
+disk.find.which.now	where is ollama installed on this machine
+disk.find.which.now	which directory is vlc in
+disk.find.which.now	location of the kate program
+disk.find.which.now	where on disk is the python interpreter
+disk.find.which.now	what is the location of the file called notes.txt
+disk.find.which.now	find the file named budget.xlsx
+disk.find.which.now	where is the file named aeon flux
+disk.find.which.now	location of the folder called projects

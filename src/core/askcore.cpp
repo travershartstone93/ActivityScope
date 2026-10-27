@@ -7741,10 +7741,13 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
             for (char c : x) q += c == '\'' ? std::string("'\\''") : std::string(1, c);
             return q + "'";
         };
-        // The name: a word of the question with a dot in it ("history.db", "spine-audit.md"), as typed; else the question's
-        // words the analyzer doesn't know, as typed (the stemmed forms would break a name).
+        // The name, as typed: text in quotes; else a word with a dot in it ("history.db", "spine-audit.md"); else the words
+        // after "called" or "named" ("the file called aeon flux"); else the question's words the analyzer doesn't know
+        // (the stemmed forms would break a name). A program named with no file name asks for the program's own file.
         std::string name;
-        {
+        if (const auto q1 = question_.find('"'); q1 != std::string::npos)
+            if (const auto q2 = question_.find('"', q1 + 1); q2 != std::string::npos && q2 > q1 + 1) name = question_.substr(q1 + 1, q2 - q1 - 1);
+        if (name.empty()) {
             std::istringstream in(question_);
             for (std::string w; in >> w;) {
                 while (!w.empty() && (w.back() == '?' || w.back() == ',' || w.back() == '.' || w.back() == '"')) w.pop_back();
@@ -7754,6 +7757,59 @@ AskResult Ask::answer_records(const std::string& kind, const unllm::Reading& r, 
                     break;
                 }
             }
+        }
+        if (name.empty()) {
+            std::istringstream in(question_);
+            std::vector<std::string> raw;
+            for (std::string w; in >> w;) raw.push_back(w);
+            for (std::size_t i = 0; i + 1 < raw.size() && name.empty(); ++i) {
+                std::string low = raw[i];
+                for (auto& c : low) c = char(std::tolower(static_cast<unsigned char>(c)));
+                if (low != "called" && low != "named") continue;
+                for (std::size_t k = i + 1; k < raw.size(); ++k) {
+                    std::string w = raw[k];
+                    while (!w.empty() && (w.back() == '?' || w.back() == ',' || w.back() == '.')) w.pop_back();
+                    if (!w.empty()) name += (name.empty() ? "" : " ") + w;
+                }
+            }
+        }
+        if (!program.empty() && (name.empty() || name == program)) {
+            // "where is firefox located": the program's own file, from the records of its runs, else the PATH.
+            namespace fs = std::filesystem;
+            auto rows = query(db_, "SELECT 0, 0, 0, exe FROM procs WHERE exe != '' AND is_program(?1, name, exe, cmdline) ORDER BY started DESC LIMIT 1", {}, {program});
+            std::string path = rows.empty() ? "" : rows[0].s1;
+            if (path.empty())
+                if (const char* pe = getenv("PATH")) {
+                    std::istringstream dirs(pe);
+                    for (std::string dir; std::getline(dirs, dir, ':') && path.empty();) {
+                        std::error_code ec;
+                        if (!dir.empty() && fs::is_regular_file(dir + "/" + program, ec)) path = dir + "/" + program;
+                    }
+                }
+            if (path.empty()) {
+                res.body = program + " has no file on record: it never ran while the recorder watched, and nothing by that name is on the PATH.";
+                res.branch = "records:find-program-none";
+                return res;
+            }
+            std::error_code ec;
+            const std::string target = fs::is_symlink(path, ec) ? fs::canonical(path, ec).string() : "";
+            res.body = program + " is at " + shorten(path) + (target.empty() || target == path ? "" : " (a link to " + shorten(target) + ")") + ", the program's own file.";
+            // Other copies it has run as: files named like it (a package tool whose command line mentions it is not it).
+            std::vector<std::string> own;
+            std::string low_program = program;
+            for (auto& c : low_program) c = char(std::tolower(static_cast<unsigned char>(c)));
+            for (const auto& x : query(db_, "SELECT 0, 0, 0, exe FROM procs WHERE exe != '' AND exe != ?2 AND is_program(?1, name, exe, cmdline) GROUP BY exe ORDER BY COUNT(*) DESC LIMIT 6",
+                                       {}, {program, path})) {
+                std::string base = x.s1.substr(x.s1.rfind('/') + 1);
+                for (auto& c : base) c = char(std::tolower(static_cast<unsigned char>(c)));
+                if (base.find(low_program) != std::string::npos && own.size() < 2) own.push_back(shorten(x.s1));
+            }
+            if (!own.empty()) res.body += " It has also run as " + unllm::join_list(own) + ".";
+            res.receipts.push_back(path);
+            card_.subject = program;
+            card_.subjects_named = {program};
+            res.branch = "records:find-program";
+            return res;
         }
         if (name.empty()) {
             std::istringstream in(question_);

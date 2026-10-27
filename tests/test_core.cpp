@@ -5150,8 +5150,16 @@ void test_must_nail() {
         const std::string probe = bin_dir + "/zq-probe-" + pid + ".txt";
         std::ofstream(probe) << "x";
         const as::AskResult r = ask("where is zq-probe-" + pid + ".txt");
-        fs::remove(probe);
         CHECK(r.branch == "records:find" && has(r, "zq-probe-") && has(r, "is at"));
+        // The name after "called", several words, as typed.
+        const as::AskResult called = ask("what is the location of the file called zq-probe-" + pid);
+        fs::remove(probe);
+        CHECK(called.branch == "records:find" && has(called, ("zq-probe-" + pid + ".txt").c_str()));
+    }
+    // A program's own file, from the records of its runs.
+    {
+        const as::AskResult r = ask("where is blender located");
+        CHECK(r.branch == "records:find-program" && has(r, "blender is at /usr/bin/blender"));
     }
     // A process number: this test's own process live, and one only the records hold.
     {

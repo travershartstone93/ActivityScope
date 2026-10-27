@@ -181,17 +181,21 @@ int main(int argc, char** argv) {
         }
         if (!r.receipts.empty()) {
             // The receipts, a line each; --trace prints them whole, otherwise at most four, cut at a word.
-            std::printf("\n");
-            const std::size_t keep = show_trace ? r.receipts.size() : std::min<std::size_t>(4, r.receipts.size());
+            // The measuring notes ("form X: another topic", "also answered: ...") are for --trace only.
+            std::vector<std::string> shown;
+            for (const auto& line : r.receipts)
+                if (show_trace || (line.rfind("form ", 0) != 0 && line.rfind("forms:", 0) != 0 && line.rfind("also answered:", 0) != 0)) shown.push_back(line);
+            if (!shown.empty()) std::printf("\n");
+            const std::size_t keep = show_trace ? shown.size() : std::min<std::size_t>(4, shown.size());
             for (std::size_t i = 0; i < keep; ++i) {
-                std::string line = r.receipts[i];
+                std::string line = shown[i];
                 if (!show_trace && line.size() > 120) {
                     const auto cut = line.rfind(' ', 117);
                     line = line.substr(0, cut == std::string::npos ? 117 : cut) + "...";
                 }
                 std::printf("  %s\n", line.c_str());
             }
-            if (keep < r.receipts.size()) std::printf("  and %zu more\n", r.receipts.size() - keep);
+            if (keep < shown.size()) std::printf("  and %zu more\n", shown.size() - keep);
         }
     };
     if (!script.empty()) {
